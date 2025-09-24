@@ -1,0 +1,12 @@
+.DS_Store
+.idea
+.vscode
+.ipynb_checkpoints
+__pycache__
+
+build/
+dist/
+wheels/
+wandb/
+
+.venv
