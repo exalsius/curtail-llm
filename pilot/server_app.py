@@ -1,5 +1,3 @@
-"""pilot: A Flower / PyTorch app."""
-
 import torch
 from flwr.app import ArrayRecord, ConfigRecord, Context, MetricRecord
 from flwr.serverapp import Grid, ServerApp
@@ -7,7 +5,6 @@ from flwr.serverapp.strategy import FedAvg
 
 from pilot.task import Net, load_centralized_dataset, test
 
-# Create ServerApp
 app = ServerApp()
 
 
@@ -33,7 +30,7 @@ def main(grid: Grid, context: Context) -> None:
         initial_arrays=arrays,
         train_config=ConfigRecord({"lr": lr}),
         num_rounds=num_rounds,
-        evaluate_fn=global_evaluate,
+        # evaluate_fn=global_evaluate,
     )
 
     # Save final model to disk

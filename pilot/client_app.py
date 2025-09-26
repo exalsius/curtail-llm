@@ -1,5 +1,3 @@
-"""pilot: A Flower / PyTorch app."""
-
 import torch
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
@@ -8,7 +6,6 @@ from pilot.task import Net, load_data
 from pilot.task import test as test_fn
 from pilot.task import train as train_fn
 
-# Flower ClientApp
 app = ClientApp()
 
 
@@ -27,6 +24,11 @@ def train(msg: Message, context: Context):
     num_partitions = context.node_config["num-partitions"]
     batch_size = context.run_config["batch-size"]
     trainloader, _ = load_data(partition_id, num_partitions, batch_size)
+
+    # Print training information
+    print(f"[Client {partition_id}] Training on {len(trainloader.dataset)} samples")
+    print(f"[Client {partition_id}] Device: {device}")
+    print(f"[Client {partition_id}] Batch size: {batch_size}, Epochs: {context.run_config['local-epochs']}")
 
     # Call the training function
     train_loss = train_fn(
@@ -63,6 +65,9 @@ def evaluate(msg: Message, context: Context):
     num_partitions = context.node_config["num-partitions"]
     batch_size = context.run_config["batch-size"]
     _, valloader = load_data(partition_id, num_partitions, batch_size)
+
+    # Print evaluation information
+    print(f"[Client {partition_id}] Evaluating on {len(valloader.dataset)} samples")
 
     # Call the evaluation function
     eval_loss, eval_acc = test_fn(

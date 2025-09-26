@@ -7,33 +7,31 @@ from datasets import load_dataset
 from flwr_datasets import FederatedDataset
 from flwr_datasets.partitioner import IidPartitioner
 from torch.utils.data import DataLoader
-from torchvision.transforms import Compose, Normalize, ToTensor
+from torchvision.transforms import Compose, Normalize, ToTensor, Resize
+from torchvision.models import resnet18
+from tqdm import tqdm
 
 
 class Net(nn.Module):
-    """Model (simple CNN adapted from 'PyTorch: A 60 Minute Blitz')"""
+    """ResNet18 model for CIFAR-10 classification"""
 
-    def __init__(self):
+    def __init__(self, num_classes=10):
         super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1 = nn.Linear(16 * 5 * 5, 120)
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, 10)
+        self.backbone = resnet18(weights=None)
+        # Replace the classifier for CIFAR-10 (10 classes)
+        self.backbone.fc = nn.Linear(self.backbone.fc.in_features, num_classes)
 
     def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = x.view(-1, 16 * 5 * 5)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        return self.fc3(x)
+        return self.backbone(x)
 
 
 fds = None  # Cache FederatedDataset
 
-pytorch_transforms = Compose([ToTensor(), Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+pytorch_transforms = Compose([
+    Resize((224, 224)),  # ResNet expects 224x224 input
+    ToTensor(),
+    Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))  # ImageNet normalization
+])
 
 
 def apply_transforms(batch):
@@ -79,16 +77,22 @@ def train(net, trainloader, epochs, lr, device):
     optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9)
     net.train()
     running_loss = 0.0
-    for _ in range(epochs):
-        for batch in trainloader:
-            images = batch["img"].to(device)
-            labels = batch["label"].to(device)
-            optimizer.zero_grad()
-            loss = criterion(net(images), labels)
-            loss.backward()
-            optimizer.step()
-            running_loss += loss.item()
-    avg_trainloss = running_loss / len(trainloader)
+    total_batches = epochs * len(trainloader)
+
+    with tqdm(total=total_batches, desc="Training") as pbar:
+        for epoch in range(epochs):
+            for batch in trainloader:
+                images = batch["img"].to(device)
+                labels = batch["label"].to(device)
+                optimizer.zero_grad()
+                loss = criterion(net(images), labels)
+                loss.backward()
+                optimizer.step()
+                running_loss += loss.item()
+                pbar.update(1)
+                pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+
+    avg_trainloss = running_loss / (epochs * len(trainloader))
     return avg_trainloss
 
 
@@ -97,13 +101,15 @@ def test(net, testloader, device):
     net.to(device)
     criterion = torch.nn.CrossEntropyLoss()
     correct, loss = 0, 0.0
+
     with torch.no_grad():
-        for batch in testloader:
+        for batch in tqdm(testloader, desc="Testing"):
             images = batch["img"].to(device)
             labels = batch["label"].to(device)
             outputs = net(images)
             loss += criterion(outputs, labels).item()
             correct += (torch.max(outputs.data, 1)[1] == labels).sum().item()
+
     accuracy = correct / len(testloader.dataset)
     loss = loss / len(testloader)
     return loss, accuracy
