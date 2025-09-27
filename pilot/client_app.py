@@ -13,6 +13,14 @@ app = ClientApp()
 def train(msg: Message, context: Context):
     """Train the model on local data."""
 
+    if context.run_config["debug"] and context.node_config["partition-id"] == 0:
+        print("[Client 0] Debug mode enabled...")
+        try:
+            import pydevd_pycharm
+            pydevd_pycharm.settrace('localhost', port=5679, stdout_to_server=True, stderr_to_server=True)
+        except ImportError:
+            print("[Client 0] pydevd_pycharm not available, skipping debug setup")
+
     # Load the model and initialize it with the received weights
     model = Net()
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
