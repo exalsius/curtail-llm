@@ -3,7 +3,9 @@ from flwr.app import ArrayRecord, ConfigRecord, Context, MetricRecord
 from flwr.serverapp import Grid, ServerApp
 from flwr.serverapp.strategy import FedAvg
 
-from pilot.task import Net, load_centralized_dataset, test
+from pilot.models import get_model
+from pilot.data import get_data_loaders
+from pilot.task import test
 
 app = ServerApp()
 
@@ -19,7 +21,8 @@ def main(grid: Grid, context: Context) -> None:
     debug: bool = context.run_config["debug"]
 
     # Load global model
-    global_model = Net()
+    model_type = context.run_config.get("model-type", "resnet18")
+    global_model = get_model(model_type)
     arrays = ArrayRecord(global_model.state_dict())
 
     # Initialize FedAvg strategy
@@ -40,17 +43,22 @@ def main(grid: Grid, context: Context) -> None:
     torch.save(state_dict, "final_model.pt")
 
 
-def global_evaluate(server_round: int, arrays: ArrayRecord) -> MetricRecord:
+def global_evaluate(server_round: int, arrays: ArrayRecord, model_type: str = "resnet18") -> MetricRecord:
     """Evaluate model on central data."""
 
     # Load the model and initialize it with the received weights
-    model = Net()
+    model = get_model(model_type)
     model.load_state_dict(arrays.to_torch_state_dict())
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
     # Load entire test set
-    test_dataloader = load_centralized_dataset()
+    test_dataloader = get_data_loaders(
+        data_type="cifar10",
+        centralized=True,
+        model_type=model_type,
+        batch_size=128
+    )
 
     # Evaluate the global model on the test set
     test_loss, test_acc = test(model, test_dataloader, device)

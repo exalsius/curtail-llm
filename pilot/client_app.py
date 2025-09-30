@@ -2,7 +2,8 @@ import torch
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
 
-from pilot.task import Net, load_data
+from pilot.models import get_model
+from pilot.data import get_data_loaders
 from pilot.task import test as test_fn
 from pilot.task import train as train_fn
 
@@ -22,7 +23,8 @@ def train(msg: Message, context: Context):
             print("[Client 0] pydevd_pycharm not available, skipping debug setup")
 
     # Load the model and initialize it with the received weights
-    model = Net()
+    model_type = context.run_config.get("model-type", "resnet18")
+    model = get_model(model_type)
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -31,7 +33,13 @@ def train(msg: Message, context: Context):
     partition_id = context.node_config["partition-id"]
     num_partitions = context.node_config["num-partitions"]
     batch_size = context.run_config["batch-size"]
-    trainloader, _ = load_data(partition_id, num_partitions, batch_size)
+    trainloader, _ = get_data_loaders(
+        data_type="cifar10",
+        partition_id=partition_id,
+        num_partitions=num_partitions,
+        batch_size=batch_size,
+        model_type=model_type
+    )
 
     # Print training information
     print(f"[Client {partition_id}] Training on {len(trainloader.dataset)} samples")
@@ -63,7 +71,8 @@ def evaluate(msg: Message, context: Context):
     """Evaluate the model on local data."""
 
     # Load the model and initialize it with the received weights
-    model = Net()
+    model_type = context.run_config.get("model-type", "resnet18")
+    model = get_model(model_type)
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -72,7 +81,13 @@ def evaluate(msg: Message, context: Context):
     partition_id = context.node_config["partition-id"]
     num_partitions = context.node_config["num-partitions"]
     batch_size = context.run_config["batch-size"]
-    _, valloader = load_data(partition_id, num_partitions, batch_size)
+    _, valloader = get_data_loaders(
+        data_type="cifar10",
+        partition_id=partition_id,
+        num_partitions=num_partitions,
+        batch_size=batch_size,
+        model_type=model_type
+    )
 
     # Print evaluation information
     print(f"[Client {partition_id}] Evaluating on {len(valloader.dataset)} samples")
