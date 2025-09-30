@@ -5,7 +5,7 @@ from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict, Me
 from flwr.common import ConfigRecord, MessageType
 
 from pilot.client_app import train
-from pilot.task import Net
+from pilot.models import get_model
 
 
 @pytest.fixture
@@ -13,7 +13,7 @@ def context():
     return Context(
         run_id=123,
         node_id=456,
-        run_config={'batch-size': 32, 'local-epochs': 1, 'debug': False},
+        run_config={'batch-size': 32, 'local-epochs': 1, 'debug': False, 'model-type': 'resnet18'},
         node_config={'partition-id': 0, 'num-partitions': 2},
         state=RecordDict({
             'array_records': ArrayRecord(),
@@ -25,7 +25,7 @@ def context():
 
 @pytest.fixture
 def message():
-    model = Net()
+    model = get_model('resnet18')
     return Message(
         content=RecordDict({
             'arrays': ArrayRecord(model.state_dict()),

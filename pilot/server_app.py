@@ -5,7 +5,7 @@ from flwr.serverapp.strategy import FedAvg
 
 from pilot.models import get_model
 from pilot.data import get_data_loaders
-from pilot.task import test
+from pilot.train_test import test
 
 app = ServerApp()
 

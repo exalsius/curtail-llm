@@ -4,8 +4,8 @@ from flwr.clientapp import ClientApp
 
 from pilot.models import get_model
 from pilot.data import get_data_loaders
-from pilot.task import test as test_fn
-from pilot.task import train as train_fn
+from pilot.train_test import test as test_fn
+from pilot.train_test import train as train_fn
 
 app = ClientApp()
 

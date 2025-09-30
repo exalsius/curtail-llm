@@ -5,8 +5,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models import resnet18
 
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import LoraConfig, get_peft_model, TaskType
+# Optional imports for LoRA Mistral model
+try:
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from peft import LoraConfig, get_peft_model, TaskType
+    HAS_TRANSFORMERS = True
+except ImportError:
+    HAS_TRANSFORMERS = False
 
 
 class SimpleCNN(nn.Module):
@@ -67,6 +72,12 @@ class LoRAMistral7B(nn.Module):
         trust_remote_code=True,
     ):
         super(LoRAMistral7B, self).__init__()
+
+        if not HAS_TRANSFORMERS:
+            raise ImportError(
+                "transformers and peft are required for LoRAMistral7B. "
+                "Install with: pip install transformers peft"
+            )
 
         # Default target modules for Mistral (similar to Llama architecture)
         if target_modules is None:
