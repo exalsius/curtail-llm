@@ -1,10 +1,5 @@
-"""pilot: A Flower / PyTorch app."""
-
 import torch
 from tqdm import tqdm
-
-from .models import get_model
-from .data import get_data_loaders
 
 
 def train(net, trainloader, epochs, lr, device):

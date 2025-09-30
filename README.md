@@ -10,43 +10,6 @@ source .venv/bin/activate
 uv sync --dev --extra test
 ```
 
-# Federated Learning with PyTorch and Flower (Quickstart Example)
-
-This introductory example to Flower uses PyTorch, but deep knowledge of PyTorch is not necessarily required to run the example. However, it will help you understand how to adapt Flower to your use case. Running this example in itself is quite easy. This example uses [Flower Datasets](https://flower.ai/docs/datasets/) to download, partition and preprocess the CIFAR-10 dataset.
-
-## Set up the project
-
-### Clone the project
-
-Start by cloning the example project:
-
-```shell
-git clone --depth=1 https://github.com/adap/flower.git _tmp \
-        && mv _tmp/examples/quickstart-pytorch . \
-        && rm -rf _tmp \
-        && cd quickstart-pytorch
-```
-
-This will create a new directory called `quickstart-pytorch` with the following structure:
-
-```shell
-quickstart-pytorch
-├── pilot
-│   ├── __init__.py
-│   ├── client_app.py   # Defines your ClientApp
-│   ├── server_app.py   # Defines your ServerApp
-│   └── task.py         # Defines your model, training and data loading
-├── pyproject.toml      # Project metadata like dependencies and configs
-└── README.md
-```
-
-### Install dependencies and project
-
-Install the dependencies defined in `pyproject.toml` as well as the `pytorchexample` package.
-
-```bash
-pip install -e .
-```
 
 ## Run the project
 
@@ -77,6 +40,7 @@ flwr run . local-simulation-gpu
 
 > [!TIP]
 > For a more detailed walk-through check our [quickstart PyTorch tutorial](https://flower.ai/docs/framework/tutorial-quickstart-pytorch.html)
+
 
 ### Run with the Deployment Engine
 

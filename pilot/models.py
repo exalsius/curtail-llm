@@ -1,17 +1,10 @@
-"""Model definitions for federated learning."""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models import resnet18
 
-# Optional imports for LoRA Mistral model
-try:
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    from peft import LoraConfig, get_peft_model, TaskType
-    HAS_TRANSFORMERS = True
-except ImportError:
-    HAS_TRANSFORMERS = False
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import LoraConfig, get_peft_model, TaskType
 
 
 class SimpleCNN(nn.Module):
@@ -19,15 +12,10 @@ class SimpleCNN(nn.Module):
 
     def __init__(self, num_classes=10):
         super(SimpleCNN, self).__init__()
-        # Convolutional layers
         self.conv1 = nn.Conv2d(3, 32, 3, padding=1)
         self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
         self.pool = nn.MaxPool2d(2, 2)
         self.dropout = nn.Dropout(0.25)
-
-        # Calculate the size after convolutions for CIFAR-10 (32x32 input)
-        # After conv1 + pool: 16x16x32
-        # After conv2 + pool: 8x8x64 = 4096
         self.fc1 = nn.Linear(64 * 8 * 8, 512)
         self.fc2 = nn.Linear(512, 256)
         self.fc3 = nn.Linear(256, num_classes)
@@ -50,7 +38,6 @@ class ResNet18(nn.Module):
     def __init__(self, num_classes=10):
         super(ResNet18, self).__init__()
         self.backbone = resnet18(weights=None)
-        # Replace the classifier for CIFAR-10 (10 classes)
         self.backbone.fc = nn.Linear(self.backbone.fc.in_features, num_classes)
 
     def forward(self, x):
@@ -72,12 +59,6 @@ class LoRAMistral7B(nn.Module):
         trust_remote_code=True,
     ):
         super(LoRAMistral7B, self).__init__()
-
-        if not HAS_TRANSFORMERS:
-            raise ImportError(
-                "transformers and peft are required for LoRAMistral7B. "
-                "Install with: pip install transformers peft"
-            )
 
         # Default target modules for Mistral (similar to Llama architecture)
         if target_modules is None:
@@ -142,20 +123,12 @@ class LoRAMistral7B(nn.Module):
         self.model.load_adapter(path)
 
 
-def get_model(model_type="simple_cnn", **kwargs):
-    """Factory function to create models based on type."""
+def get_model(model_type: str, **kwargs):
     if model_type == "simple_cnn":
         return SimpleCNN(**kwargs)
     elif model_type == "resnet18":
         return ResNet18(**kwargs)
     elif model_type == "lora_mistral7b":
-        if not HAS_TRANSFORMERS:
-            raise ImportError(
-                "transformers and peft are required for LoRAMistral7B. "
-                "Install with: pip install transformers peft"
-            )
         return LoRAMistral7B(**kwargs)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
-
-

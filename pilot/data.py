@@ -1,5 +1,3 @@
-"""Data loading and preprocessing utilities for federated learning."""
-
 import torch
 from datasets import load_dataset
 from flwr_datasets import FederatedDataset
