@@ -1,17 +1,15 @@
 from typing import Dict
 
 import torch
-from datasets import Dataset
-from flwr_datasets import FederatedDataset
-from flwr_datasets.partitioner import IidPartitioner
+from datasets import Dataset, load_dataset
 from torch.utils.data import DataLoader
 from torchvision.transforms import Compose, Normalize, ToTensor, Resize
 from transformers import AutoTokenizer
 from trl import DataCollatorForCompletionOnlyLM
 
 
-# Cache FederatedDataset to avoid reloading
-fds = None
+# Cache datasets to avoid reloading
+_dataset_cache = {}
 
 # Image transforms for different model types
 CIFAR10_TRANSFORMS = {
@@ -28,41 +26,14 @@ CIFAR10_TRANSFORMS = {
 
 
 def apply_transforms(batch, model_type="resnet18"):
-    """Apply transforms to the partition from FederatedDataset."""
+    """Apply transforms to the batch."""
     transforms = CIFAR10_TRANSFORMS.get(model_type, CIFAR10_TRANSFORMS["resnet18"])
     batch["img"] = [transforms(img) for img in batch["img"]]
     return batch
 
 
-def load_cifar10_data(partition_id: int, num_partitions: int, batch_size: int, model_type="resnet18"):
-    """Load partition CIFAR10 data for image classification models."""
-    # Only initialize `FederatedDataset` once
-    global fds
-    if fds is None:
-        partitioner = IidPartitioner(num_partitions=num_partitions)
-        fds = FederatedDataset(
-            dataset="uoft-cs/cifar10",
-            partitioners={"train": partitioner},
-        )
-
-    partition = fds.load_partition(partition_id)
-    # Divide data on each node: 80% train, 20% test
-    partition_train_test = partition.train_test_split(test_size=0.2, seed=42)
-
-    # Apply transforms based on model type
-    transform_fn = lambda batch: apply_transforms(batch, model_type)
-    partition_train_test = partition_train_test.with_transform(transform_fn)
-
-    trainloader = DataLoader(
-        partition_train_test["train"], batch_size=batch_size, shuffle=True
-    )
-    testloader = DataLoader(partition_train_test["test"], batch_size=batch_size)
-
-    return trainloader, testloader
-
-
 def load_cifar10_centralized(model_type="resnet18", batch_size=128):
-    """Load centralized CIFAR-10 test set for evaluation."""
+    """Load centralized CIFAR-10 test set for global evaluation."""
     test_dataset = load_dataset("uoft-cs/cifar10", split="test")
 
     # Apply transforms based on model type
@@ -140,41 +111,143 @@ def reformat(dataset: Dataset, llm_task: str) -> Dataset:
     return dataset
 
 
-def load_flowertune_partition(
-    partition_id: int,
-    num_partitions: int,
+def load_sharded_data(
     dataset_name: str,
-    llm_task: str = "medical",
-) -> Dataset:
-    """Load a federated partition using the Flowertune benchmark helper."""
-
-    global fds
-    if fds is None:
-        partitioner = IidPartitioner(num_partitions=num_partitions)
-        fds = FederatedDataset(
-            dataset=dataset_name,
-            partitioners={"train": partitioner},
-        )
-
-    partition = fds.load_partition(partition_id, "train")
-    return reformat(partition, llm_task=llm_task)
-
-
-def load_text_data(
-    partition_id: int,
-    num_partitions: int,
+    shard_id: int,
+    num_shards: int,
+    start_batch_idx: int,
+    epoch: int,
     batch_size: int,
-    *,
-    dataset_name: str,
-    llm_task: str = "medical",
-) -> Dataset:
-    """Load Flowertune-style text data and return the federated partition."""
+    streaming: bool = False,
+    data_format: str = "text",
+    **format_kwargs
+) -> DataLoader:
+    """
+    Load data from a specific shard, resuming from start_batch_idx.
 
-    return load_flowertune_partition(
-        partition_id=partition_id,
-        num_partitions=num_partitions,
+    This function implements queue-based data loading where each shard
+    represents an independent queue through the dataset. Workers are
+    assigned to shards and can resume from arbitrary positions.
+
+    Args:
+        dataset_name: HuggingFace dataset name
+        shard_id: Which shard/queue to load (0 to num_shards-1)
+        num_shards: Total number of shards
+        start_batch_idx: Resume from this batch index within the shard
+        epoch: Current epoch number (for shuffling seed)
+        batch_size: Batch size for DataLoader
+        streaming: Use streaming dataset API
+        data_format: "text" for LLM data, "image" for vision data
+        **format_kwargs: Additional formatting arguments (llm_task, model_type, etc.)
+
+    Returns:
+        DataLoader starting from the specified position in the shard
+    """
+
+    if streaming:
+        # Streaming approach: use HuggingFace's built-in sharding
+        dataset = load_dataset(dataset_name, split="train", streaming=True)
+        dataset = dataset.shuffle(seed=epoch, buffer_size=10000)
+        dataset = dataset.shard(num_shards=num_shards, index=shard_id)
+
+        # Skip to start position
+        skip_samples = start_batch_idx * batch_size
+        dataset = dataset.skip(skip_samples)
+
+        # Apply formatting for text data
+        if data_format == "text":
+            llm_task = format_kwargs.get("llm_task", "medical")
+            # For streaming datasets, we need to apply formatting differently
+            # This is a simplified version - may need more sophisticated handling
+            pass  # Formatting will be handled by the trainer
+
+        elif data_format == "image":
+            model_type = format_kwargs.get("model_type", "resnet18")
+            dataset = dataset.map(lambda batch: apply_transforms(batch, model_type), batched=True)
+
+    else:
+        # Full download approach: load entire dataset and manually shard
+        cache_key = f"{dataset_name}:epoch{epoch}"
+
+        if cache_key not in _dataset_cache:
+            raw_dataset = load_dataset(dataset_name, split="train")
+            if not isinstance(raw_dataset, Dataset):
+                raise ValueError(f"Expected Dataset but got {type(raw_dataset)}")
+
+            # Shuffle with epoch-specific seed
+            shuffled = raw_dataset.shuffle(seed=epoch)
+
+            # Apply formatting based on data type
+            if data_format == "text":
+                llm_task = format_kwargs.get("llm_task", "medical")
+                shuffled = reformat(shuffled, llm_task=llm_task)
+
+            _dataset_cache[cache_key] = shuffled
+
+        full_dataset = _dataset_cache[cache_key]
+
+        # Manual sharding: take every Nth sample starting from shard_id
+        total_samples = len(full_dataset)
+        shard_indices = list(range(shard_id, total_samples, num_shards))
+        shard = full_dataset.select(shard_indices)
+
+        # Skip to start position within shard
+        start_sample = start_batch_idx * batch_size
+        if start_sample < len(shard):
+            remaining = shard.select(range(start_sample, len(shard)))
+        else:
+            # Shard exhausted, return empty dataset
+            # Client should handle this by wrapping to next epoch
+            remaining = shard.select([])
+
+        # Apply transforms for images
+        if data_format == "image":
+            model_type = format_kwargs.get("model_type", "resnet18")
+            remaining = remaining.with_transform(lambda b: apply_transforms(b, model_type))
+
+        dataset = remaining
+
+    return DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
+
+def get_data_loaders(
+    dataset_name: str,
+    shard_id: int,
+    num_shards: int,
+    start_batch_idx: int,
+    epoch: int,
+    batch_size: int,
+    streaming: bool = False,
+    data_format: str = "text",
+    **kwargs
+) -> DataLoader:
+    """
+    Factory function for loading sharded data.
+
+    Args:
+        dataset_name: HuggingFace dataset name
+        shard_id: Which shard/queue to load
+        num_shards: Total number of shards (use 1 for centralized/full dataset)
+        start_batch_idx: Resume from this batch index
+        epoch: Current epoch number
+        batch_size: Batch size
+        streaming: Use streaming API
+        data_format: "text" or "image"
+        **kwargs: Additional format-specific arguments
+
+    Returns:
+        DataLoader for the requested data
+    """
+    return load_sharded_data(
         dataset_name=dataset_name,
-        llm_task=llm_task,
+        shard_id=shard_id,
+        num_shards=num_shards,
+        start_batch_idx=start_batch_idx,
+        epoch=epoch,
+        batch_size=batch_size,
+        streaming=streaming,
+        data_format=data_format,
+        **kwargs
     )
 
 
@@ -191,36 +264,64 @@ def replace_keys(input_dict: Dict, match: str = "-", target: str = "_") -> Dict:
     return new_dict
 
 
-# Factory function for data loading
-def get_data_loaders(
-    data_type="cifar10",
-    partition_id=0,
-    num_partitions=2,
-    batch_size=32,
-    model_type="resnet18",
-    centralized=False,
-    **kwargs
-):
-    """Factory function to get data loaders based on data type."""
-    if data_type == "cifar10":
-        if centralized:
-            return load_cifar10_centralized(model_type=model_type, batch_size=batch_size)
-        else:
-            return load_cifar10_data(
-                partition_id=partition_id,
-                num_partitions=num_partitions,
-                batch_size=batch_size,
-                model_type=model_type
-            )
-    elif data_type == "text":
-        if centralized:
-            raise NotImplementedError("Centralized text data loading not implemented yet")
-        else:
-            return load_text_data(
-                partition_id=partition_id,
-                num_partitions=num_partitions,
-                batch_size=batch_size,
-                **kwargs
-            )
-    else:
-        raise ValueError(f"Unknown data type: {data_type}")
+class QueueManager:
+    """Tracks progress of N independent data queues across FL rounds.
+
+    Each queue maintains its position (epoch, batch_idx) in the dataset.
+    Workers are dynamically assigned to queues with lowest progress each round,
+    ensuring uniform coverage without duplicate work.
+    """
+
+    def __init__(self, num_queues: int):
+        """Initialize N queues, all starting at (epoch=0, batch_idx=0).
+
+        Args:
+            num_queues: Number of independent queues (typically max expected workers)
+        """
+        self.num_queues = num_queues
+        self.queue_states = [(0, 0) for _ in range(num_queues)]  # (epoch, batch_idx)
+
+    def assign_workers(self, num_available: int) -> list[tuple[int, int, int]]:
+        """Assign workers to queues with lowest progress.
+
+        Queues are sorted by (epoch, batch_idx) and workers are assigned
+        to the N lowest-progress queues.
+
+        Args:
+            num_available: Number of workers available this round
+
+        Returns:
+            List of (queue_id, epoch, batch_idx) for each worker
+        """
+        # Sort queues by progress (epoch first, then batch_idx)
+        sorted_queues = sorted(
+            enumerate(self.queue_states),
+            key=lambda x: (x[1][0], x[1][1])
+        )
+
+        # Assign workers to N lowest-progress queues
+        assignments = []
+        for i in range(min(num_available, self.num_queues)):
+            queue_id, (epoch, batch_idx) = sorted_queues[i]
+            assignments.append((queue_id, epoch, batch_idx))
+
+        return assignments
+
+    def update(self, queue_id: int, final_batch_idx: int, final_epoch: int):
+        """Update queue state after worker completes training.
+
+        Args:
+            queue_id: Which queue to update
+            final_batch_idx: Final batch index reached by worker
+            final_epoch: Final epoch reached by worker
+        """
+        if queue_id < 0 or queue_id >= self.num_queues:
+            raise ValueError(f"Invalid queue_id {queue_id}, must be 0-{self.num_queues-1}")
+
+        self.queue_states[queue_id] = (final_epoch, final_batch_idx)
+
+    def __repr__(self) -> str:
+        """String representation showing all queue states."""
+        queue_strs = [f"Q{i}: (epoch={e}, batch={b})"
+                      for i, (e, b) in enumerate(self.queue_states)]
+        return f"QueueManager({self.num_queues} queues: {', '.join(queue_strs)})"

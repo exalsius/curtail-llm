@@ -4,11 +4,13 @@
 .ipynb_checkpoints
 __pycache__
 
+.venv
+.pytest_cache
+.claude
+CLAUDE.md
+
 build/
 dist/
 wheels/
 wandb/
 
-.venv
-
-CLAUDE.md

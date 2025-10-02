@@ -15,6 +15,7 @@ dependencies = [
     "tqdm",
     "transformers",
     "peft",
+    "trl",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +48,12 @@ learning-rate = 0.1
 batch-size = 32
 debug = true
 round-interval-seconds = 300
+num-queues = 3
+dataset-name = "uoft-cs/cifar10"
+data-format = "image"
+llm-task = "medical"
+streaming = false
+model-type = "resnet18"
 
 [tool.flwr.federations]
 default = "local-simulation"

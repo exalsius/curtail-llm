@@ -3,29 +3,42 @@ from tqdm import tqdm
 
 
 def train(net, trainloader, epochs, lr, device):
-    """Train the model on the training set."""
+    """Train the model on the training set with progress tracking.
+
+    Returns:
+        tuple: (avg_train_loss, batches_processed, epochs_completed)
+    """
     net.to(device)  # move model to GPU if available
     criterion = torch.nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9)
     net.train()
+
     running_loss = 0.0
-    total_batches = epochs * len(trainloader)
+    batches_processed = 0
+    epochs_completed = 0
 
-    with tqdm(total=total_batches, desc="Training") as pbar:
-        for epoch in range(epochs):
-            for batch in trainloader:
-                images = batch["img"].to(device)
-                labels = batch["label"].to(device)
-                optimizer.zero_grad()
-                loss = criterion(net(images), labels)
-                loss.backward()
-                optimizer.step()
-                running_loss += loss.item()
-                pbar.update(1)
-                pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+    for epoch in range(epochs):
+        epoch_batches = 0
 
-    avg_trainloss = running_loss / (epochs * len(trainloader))
-    return avg_trainloss
+        for batch in tqdm(trainloader, desc=f"Epoch {epoch + 1}/{epochs}"):
+            images = batch["img"].to(device)
+            labels = batch["label"].to(device)
+
+            optimizer.zero_grad()
+            loss = criterion(net(images), labels)
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item()
+            batches_processed += 1
+            epoch_batches += 1
+
+        # Only count epoch as completed if we processed at least one batch
+        if epoch_batches > 0:
+            epochs_completed += 1
+
+    avg_trainloss = running_loss / batches_processed if batches_processed > 0 else 0.0
+    return avg_trainloss, batches_processed, epochs_completed
 
 
 def test(net, testloader, device):
@@ -34,6 +47,7 @@ def test(net, testloader, device):
     criterion = torch.nn.CrossEntropyLoss()
     correct, loss = 0, 0.0
 
+    net.eval()
     with torch.no_grad():
         for batch in tqdm(testloader, desc="Testing"):
             images = batch["img"].to(device)
