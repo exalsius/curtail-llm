@@ -26,7 +26,7 @@ from transformers import (
 def main(
     model: str, # e.g. "decapoda-research/llama-7b-hf" "chavinlo/alpaca-native" "chavinlo/alpaca-13b"
     val_set_size: Union[int, float] = 0.1,
-    prompt_template: str = "prompts/medalpaca.json",
+    prompt_template: str = "medalpaca/prompt_templates/medalpaca.json",
     model_max_length: int = 256,  # should not exceed 2048, as LLaMA is trained with this
     train_on_inputs: bool = True,  # if False, masks out inputs in loss
     data_path: str = "medical_meadow_small.json",
@@ -234,7 +234,7 @@ def main(
         logging_steps=10,
         optim=optim,
         lr_scheduler_type=lr_scheduler_type,
-        evaluation_strategy="steps" if val_set_size > 0 else "no",
+        eval_strategy="steps" if val_set_size > 0 else "no",
         save_strategy="steps",
         eval_steps=eval_steps if val_set_size > 0 else None,
         save_steps=eval_steps,
