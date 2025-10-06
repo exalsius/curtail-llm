@@ -10,7 +10,7 @@ from peft import (
     LoraConfig,
     get_peft_model,
     get_peft_model_state_dict,
-    prepare_model_for_int8_training,
+    prepare_model_for_kbit_training,
 )
 from transformers import (
     AutoModelForCausalLM,
@@ -165,18 +165,18 @@ def main(
     else:
         load_model = AutoModelForCausalLM
 
-    # loading the model with torch_dtype=torch.float16 with only fp16 and no LoRA leads
+    # loading the model with dtype=torch.float16 with only fp16 and no LoRA leads
     # to `ValueError: Attempting to unscale FP16 gradients.`
 
     model = load_model.from_pretrained(
         model_name,
         load_in_8bit=train_in_8bit,
-        torch_dtype=torch.float16 if any([use_lora, bf16]) else torch.float32,
+        dtype=torch.float16 if any([use_lora, bf16]) else torch.float32,
         device_map=device_map,
     )
 
     if train_in_8bit:
-        model = prepare_model_for_int8_training(model)
+        model = prepare_model_for_kbit_training(model)
 
     if use_lora:
         lora_config = LoraConfig(
