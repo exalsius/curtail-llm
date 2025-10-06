@@ -8,6 +8,7 @@
 # uv sync --dev --extra test
 
 python -m venv venv
+source venv/bin/activate
 pip install -e ".[dev,test]"
 ```
 

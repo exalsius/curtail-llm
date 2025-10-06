@@ -16,6 +16,7 @@ dependencies = [
     "transformers",
     "peft",
     "trl",
+    "wandb",
 
     # medAlpaca dependencies
     "accelerate",
