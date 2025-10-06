@@ -5,7 +5,6 @@ from datasets import Dataset, load_dataset
 from torch.utils.data import DataLoader
 from torchvision.transforms import Compose, Normalize, ToTensor, Resize
 from transformers import AutoTokenizer
-from trl import DataCollatorForCompletionOnlyLM
 
 
 # Cache datasets to avoid reloading
@@ -78,6 +77,7 @@ def get_tokenizer_and_data_collator_and_prompt_formatting(model_name: str):
         add_special_tokens=False,
     )[2:]
 
+    from trl import DataCollatorForCompletionOnlyLM
     data_collator = DataCollatorForCompletionOnlyLM(
         response_template_ids,
         tokenizer=tokenizer,

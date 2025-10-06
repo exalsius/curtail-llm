@@ -10,13 +10,13 @@ from flwr.serverapp import ServerApp
 from flwr.serverapp.strategy import FedAvg
 
 from pilot.models import get_model
-from pilot.data import get_data_loaders, QueueManager
+from pilot.data import get_train_loader, QueueManager
 from pilot.train_test import test
 
 app = ServerApp()
 
 
-class PilotAvgWithQueues(FedAvg):
+class PilotAvg(FedAvg):
     """FedAvg with time-based scheduling and queue-based data management."""
 
     def __init__(
@@ -24,8 +24,8 @@ class PilotAvgWithQueues(FedAvg):
         *,
         round_interval_seconds: float,
         schedule_anchor_ts: float,
-        queue_manager: QueueManager,
         dataset_name: str,
+        num_queues: int,
         **kwargs,
     ) -> None:
         if "min_train_nodes" not in kwargs:
@@ -40,7 +40,8 @@ class PilotAvgWithQueues(FedAvg):
         self._deadline_iter: Iterator[pd.Timestamp] = self._build_deadline_iter(anchor)
 
         # Queue management
-        self.queue_manager = queue_manager
+        queue_manager = QueueManager(num_queues=num_queues)
+        print(f"\n[Server] Initialized {queue_manager}")
         self.dataset_name = dataset_name
 
     def _build_deadline_iter(self, anchor: pd.Timestamp) -> Iterator[pd.Timestamp]:
@@ -112,22 +113,18 @@ def main(grid: Grid, context: Context) -> None:
     # Establish the anchor timestamp for round scheduling
     schedule_anchor_ts = time.time()
 
-    # Initialize queue manager
-    queue_manager = QueueManager(num_queues=num_queues)
-    print(f"\n[Server] Initialized {queue_manager}")
-
     # Load global model
     model_type = context.run_config.get("model-type", "resnet18")
     global_model = get_model(model_type)
     arrays = ArrayRecord(global_model.state_dict())
 
     # Initialize FedAvg strategy with queue management
-    strategy = PilotAvgWithQueues(
+    strategy = PilotAvg(
         fraction_evaluate=fraction_evaluate,
         round_interval_seconds=round_interval_seconds,
         schedule_anchor_ts=schedule_anchor_ts,
-        queue_manager=queue_manager,
         dataset_name=dataset_name,
+        num_queues=10,
     )
 
     # Start strategy, run FedAvg for `num_rounds`
@@ -136,7 +133,7 @@ def main(grid: Grid, context: Context) -> None:
         initial_arrays=arrays,
         train_config=ConfigRecord(dict(lr=lr, debug=debug)),
         num_rounds=num_rounds,
-        # evaluate_fn=global_evaluate,
+        evaluate_fn=global_evaluate,
     )
 
     # Save final model to disk
@@ -155,7 +152,7 @@ def global_evaluate(server_round: int, arrays: ArrayRecord, model_type: str = "r
     model.to(device)
 
     # Load entire test set (num_shards=1 gives full dataset)
-    test_dataloader = get_data_loaders(
+    test_dataloader = get_train_loader(
         dataset_name="uoft-cs/cifar10",
         shard_id=0,
         num_shards=1,

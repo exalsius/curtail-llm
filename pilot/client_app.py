@@ -3,7 +3,7 @@ from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
 
 from pilot.models import get_model
-from pilot.data import get_data_loaders
+from pilot.data import get_train_loader
 from pilot.train_test import train as train_fn
 
 app = ClientApp()
@@ -42,14 +42,13 @@ def train(msg: Message, context: Context):
     dataset_name = msg.content["config"]["dataset-name"]
     num_queues = msg.content["config"]["num-queues"]
 
-    trainloader = get_data_loaders(
+    trainloader = get_train_loader(
         dataset_name=dataset_name,
         shard_id=queue_id,
         num_shards=num_queues,
         start_batch_idx=start_batch_idx,
         epoch=epoch,
         batch_size=batch_size,
-        streaming=context.run_config.get("streaming", False),
         data_format=context.run_config.get("data-format", "image"),
         llm_task=context.run_config.get("llm-task", "medical"),
         model_type=model_type,
