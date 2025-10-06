@@ -1,4 +1,4 @@
-# Pilot 🧑‍✈️
+# Pilot ✈
 
 ## Installation
 
@@ -9,7 +9,7 @@ uv sync --dev --extra test
 ```
 
 
-### Remote
+### Cluster Setup
 
 ```
 apt update && apt install git -y
@@ -26,5 +26,5 @@ git clone git@github.com:exalsius/pilot.git
 ## medAlpaca
 
 ```
-python medAlpaca-main/medalpaca/train.py --model chavinlo/alpaca-native --data_path medical_meadow_small.json --output_dir 'output' --train_in_8bit False \ --use_lora True --bf16 True --tf32 False --fp16 False --global_batch_size 128 --per_device_batch_size 8
+python medAlpaca-main/medalpaca/train.py --model chavinlo/alpaca-native --output_dir 'output'
 ```

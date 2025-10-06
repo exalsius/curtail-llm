@@ -24,19 +24,19 @@ from transformers import (
 
 
 def main(
-    model: str, # e.g. "decapoda-research/llama-7b-hf"
+    model: str, # e.g. "decapoda-research/llama-7b-hf" "chavinlo/alpaca-native" "chavinlo/alpaca-13b"
     val_set_size: Union[int, float] = 0.1,
     prompt_template: str = "prompts/medalpaca.json",
     model_max_length: int = 256,  # should not exceed 2048, as LLaMA is trained with this
     train_on_inputs: bool = True,  # if False, masks out inputs in loss
     data_path: str = "medical_meadow_small.json",
-    train_in_8bit: bool = True,
+    train_in_8bit: bool = False,
     use_lora: bool = True,
     lora_r: int = 8,
     lora_alpha: int = 16,
     lora_dropout: float = 0.1,
     lora_target_modules: Tuple[str] = ("q_proj", "v_proj"),
-    per_device_batch_size: int = 2,
+    per_device_batch_size: int = 4,
     num_epochs: int = 3,
     learning_rate: float = 2e-5,
     global_batch_size: int = 128,
