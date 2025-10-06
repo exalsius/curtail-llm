@@ -16,6 +16,15 @@ dependencies = [
     "transformers",
     "peft",
     "trl",
+
+    # medAlpaca dependencies
+    "accelerate",
+    "appdirs",
+    "datasets",
+    "fire",
+    "gradio",
+    "sentencepiece",
+    # "bitsandbytes",  # only required for 4-bit or 8-bit quantization
 ]
 
 [project.optional-dependencies]
@@ -52,7 +61,6 @@ num-queues = 3
 dataset-name = "uoft-cs/cifar10"
 data-format = "image"
 llm-task = "medical"
-streaming = false
 model-type = "resnet18"
 
 [tool.flwr.federations]
