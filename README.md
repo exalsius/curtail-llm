@@ -3,9 +3,12 @@
 ## Installation
 
 ```
-uv venv
-source .venv/bin/activate
-uv sync --dev --extra test
+# uv venv
+# source .venv/bin/activate
+# uv sync --dev --extra test
+
+python -m venv venv
+pip install -e ".[dev,test]"
 ```
 
 
@@ -15,7 +18,7 @@ uv sync --dev --extra test
 apt update && apt install git -y
 git config --global user.name "Philipp Wiesner"
 git config --global user.email "philipp.wiesner@logsight.ai"
-ssh-keygen -t ed25519 -C "philipp.wiesner@logsight.ai"
+ssh-keygen -t ed25519 -C "philipp.wiesner@logsight.ai" -N ""
 eval "$(ssh-agent -s)"
 ssh-add ~/.ssh/id_ed25519
 cat ~/.ssh/id_ed25519.pub
@@ -26,5 +29,6 @@ git clone git@github.com:exalsius/pilot.git
 ## medAlpaca
 
 ```
-python medAlpaca-main/medalpaca/train.py --model chavinlo/alpaca-native --output_dir 'output'
+cd medAlpaca-main
+python medalpaca/train.py --model chavinlo/alpaca-13b --output_dir 'output' --wandb_run_name "chavinlo/alpaca-13b"
 ```

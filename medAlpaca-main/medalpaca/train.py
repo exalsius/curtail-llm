@@ -46,7 +46,7 @@ def main(
     device_map: str = "auto",
     group_by_length: bool = False,
     wandb_run_name: str = "test",
-    use_wandb: bool = False,
+    use_wandb: bool = True,
     wandb_project: str = "medalpaca",
     optim: str = "adamw_torch",
     lr_scheduler_type: str = "cosine",
@@ -173,6 +173,7 @@ def main(
         load_in_8bit=train_in_8bit,
         dtype=torch.float16 if any([use_lora, bf16]) else torch.float32,
         device_map=device_map,
+        offload_folder="offload",
     )
 
     if train_in_8bit:
