@@ -14,18 +14,29 @@ class QueueManager:
         self.queue_states = [(0, 0) for _ in range(num_queues)]
 
     def assign_workers(self, node_ids: list[int]):
-        """Assign workers to queues in round-robin fashion.
+        """Assign workers to queues with least progress.
 
         Returns:
             List of (queue_id, epoch, batch_idx) tuples, one per worker
         """
-        # TODO: We want to addign workers to queues with least progress
-        # TODO: We want to fail if more workers than queues
+        # Fail if more workers than queues
+        if len(node_ids) > self.num_queues:
+            raise ValueError(f"Cannot assign {len(node_ids)} workers to {self.num_queues} queues.")
+
+        # Sort queues by progress (epoch, batch_idx) to find those with least progress
+        queue_progress = [
+            (queue_id, epoch, batch_idx)
+            for queue_id, (batch_idx, epoch) in enumerate(self.queue_states)
+        ]
+        # Sort by (epoch, batch_idx) - queues with lower values have less progress
+        queue_progress.sort(key=lambda x: (x[1], x[2]))
+
+        # Assign workers to the queues with least progress
         assignments = []
-        for node_id in node_ids:
-            queue_id = node_id % self.num_queues
-            batch_idx, epoch = self.queue_states[queue_id]
+        for i, node_id in enumerate(node_ids):
+            queue_id, epoch, batch_idx = queue_progress[i]
             assignments.append((queue_id, epoch, batch_idx))
+
         return assignments
 
     def update(self, queue_id: int, batch_idx: int, epoch: int):
