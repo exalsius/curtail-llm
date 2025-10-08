@@ -76,9 +76,9 @@ class PilotAvg(Strategy):
         print(f"\n[Round {server_round}] Assigning {len(assignments)} workers to shards")
         print(f"[Round {server_round}] Shard states: {self.shard_manager.shard_states}")
 
-        config["server-round"] = server_round
-        config["dataset-name"] = self.dataset_name
-        config["num-shards"] = self.num_shards
+        config["server_round"] = server_round
+        config["dataset_name"] = self.dataset_name
+        config["num_shards"] = self.num_shards
         config["client_debug_port"] = self.client_debug_port
 
         messages = []
@@ -100,7 +100,7 @@ class PilotAvg(Strategy):
         results_list = list(replies)
         for result in results_list:
             metrics: MetricRecord = result.content["metrics"]
-            shard_id: int = metrics["shard-id"]
+            shard_id: int = metrics["shard_id"]
             if shard_id is not None:
                 new_processed_batches: int = metrics["new_processed_batches"]
                 self.shard_manager.update(shard_id, new_processed_batches)
@@ -125,7 +125,7 @@ class PilotAvg(Strategy):
         node_ids = list(grid.get_node_ids())
         log(INFO, "configure_evaluate: Evaluating on all %s nodes", len(node_ids))
 
-        config["server-round"] = server_round
+        config["server_round"] = server_round
         record = RecordDict({self.arrayrecord_key: arrays, self.configrecord_key: config})
         messages = [Message(content=record, message_type=MessageType.EVALUATE, dst_node_id=node_id)
                     for node_id in node_ids]
@@ -227,11 +227,11 @@ class PilotAvg(Strategy):
 @app.main()
 def main(grid: Grid, context: Context) -> None:
     """Main entry point for the ServerApp."""
-    num_rounds: int = context.run_config["num-server-rounds"]
-    lr: float = context.run_config["learning-rate"]
-    dataset_name: str = context.run_config["dataset-name"]
-    num_shards: int = context.run_config["num-shards"]
-    # round_interval_seconds: float = context.run_config["round-interval-seconds"]
+    num_server_rounds: int = context.run_config["num_server_rounds"]
+    lr: float = context.run_config["learning_rate"]
+    dataset_name: str = context.run_config["dataset_name"]
+    num_shards: int = context.run_config["num_shards"]
+    # round_interval_seconds: float = context.run_config["round_interval_seconds"]
 
     server_debug_port: int = context.run_config["server_debug_port"]
     if server_debug_port:
@@ -243,7 +243,7 @@ def main(grid: Grid, context: Context) -> None:
     # schedule_anchor_ts = time.time()
 
     # Load global model
-    model_type = context.run_config["model-type"]
+    model_type = context.run_config["model_type"]
     global_model = get_model(model_type)
     arrays = ArrayRecord(global_model.state_dict())
 
@@ -256,12 +256,12 @@ def main(grid: Grid, context: Context) -> None:
         # schedule_anchor_ts=schedule_anchor_ts,
     )
 
-    # Start strategy, run FedAvg for `num_rounds`
+    # Start strategy, run FedAvg for `num_server_rounds`
     result = strategy.start(
         grid=grid,
         initial_arrays=arrays,
         train_config=ConfigRecord(dict(lr=lr)),
-        num_rounds=num_rounds,
+        num_rounds=num_server_rounds,
         evaluate_fn=lambda round, arrays: global_evaluate(round, arrays, model_type, dataset_name),
     )
 

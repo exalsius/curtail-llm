@@ -13,7 +13,7 @@ app = ClientApp()
 @app.train()
 def train(msg: Message, context: Context):
     """Train the model on queue-assigned data."""
-    partition_id = context.node_config["partition-id"]  # Worker index (0, 1, 2...)
+    partition_id = context.node_config["partition_id"]  # Worker index (0, 1, 2...)
 
     client_debug_port = context.run_config["client_debug_port"]
     if client_debug_port and partition_id == 0:
@@ -22,25 +22,25 @@ def train(msg: Message, context: Context):
         pydevd_pycharm.settrace('localhost', port=client_debug_port, stdout_to_server=True, stderr_to_server=True)
 
     # Load the model and initialize it with the received weights
-    model_type = context.run_config["model-type"]
+    model_type = context.run_config["model_type"]
     model = get_model(model_type)
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
     config: ConfigRecord = msg.content["config"]
-    dataset_name: str = config["dataset-name"]
+    dataset_name: str = config["dataset_name"]
     shard_id: int = config["shard_id"]
-    num_shards: int = config["num-shards"]
+    num_shards: int = config["num_shards"]
     processed_batches: int = config["processed_batches"]
-    num_batches: int = context.run_config["local-batches"]
+    num_batches: int = 100  # TODO determine this via time
 
     trainloader = get_train_loader(
         dataset_name=dataset_name,
         shard_id=shard_id,
         num_shards=num_shards,
         processed_batches=processed_batches,
-        batch_size=context.run_config["batch-size"],
+        batch_size=context.run_config["batch_size"],
     )
 
     # Print training information
@@ -67,9 +67,9 @@ def train(msg: Message, context: Context):
     model_record = ArrayRecord(model.state_dict())
     metrics = {
         "train_loss": train_loss,
-        "shard-id": shard_id,
+        "shard_id": shard_id,
         "new_processed_batches": new_processed_batches,
-        "batches-processed": batches_processed,
+        "batches_processed": batches_processed,
     }
     metric_record = MetricRecord(metrics)
     content = RecordDict({"arrays": model_record, "metrics": metric_record})
