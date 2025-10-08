@@ -15,7 +15,7 @@ from flwr.serverapp.strategy.strategy_utils import (
     validate_message_reply_consistency,
 )
 
-from pilot.data import get_test_loader, QueueManager
+from pilot.data import get_test_loader, ShardManager
 from pilot.models import get_model
 from pilot.train_test import test
 
@@ -41,15 +41,15 @@ class PilotAvg(Strategy):
     def __init__(
         self,
         dataset_name: str,
-        num_queues: int,
+        num_shards: int,
         client_debug_port: bool,
         weighted_by_key: str = "num-examples",
         arrayrecord_key: str = "arrays",
         configrecord_key: str = "config",
     ) -> None:
         self.dataset_name = dataset_name
-        self.num_queues = num_queues
-        self.queue_manager = QueueManager(num_queues=num_queues)
+        self.num_shards = num_shards
+        self.shard_manager = ShardManager(num_shards=num_shards)
         self.client_debug_port = client_debug_port
         self.weighted_by_key = weighted_by_key
         self.arrayrecord_key = arrayrecord_key
@@ -58,7 +58,7 @@ class PilotAvg(Strategy):
     def summary(self) -> None:
         """Log summary configuration of the strategy."""
         log(INFO, "\t└──> Dataset: '%s'", self.dataset_name)
-        log(INFO, "\t└──> Queue: '%s'", self.queue_manager)
+        log(INFO, "\t└──> Shard: '%s'", self.shard_manager)
         log(INFO, "\t└──> Keys in records:")
         log(INFO, "\t\t├── Weighted by: '%s'", self.weighted_by_key)
         log(INFO, "\t\t├── ArrayRecord key: '%s'", self.arrayrecord_key)
@@ -71,19 +71,19 @@ class PilotAvg(Strategy):
         node_ids = list(grid.get_node_ids())
         log(INFO, "configure_train: Training on all %s nodes", len(node_ids))
 
-        # Get worker assignments from queue manager
-        assignments = self.queue_manager.assign_workers(node_ids)
-        print(f"\n[Round {server_round}] Assigning {len(assignments)} workers to queues")
-        print(f"[Round {server_round}] Queue states: {self.queue_manager.queue_states}")
+        # Get worker assignments from shard manager
+        assignments = self.shard_manager.assign_workers(node_ids)
+        print(f"\n[Round {server_round}] Assigning {len(assignments)} workers to shards")
+        print(f"[Round {server_round}] Shard states: {self.shard_manager.shard_states}")
 
         config["server-round"] = server_round
         config["dataset-name"] = self.dataset_name
-        config["num-queues"] = self.num_queues
+        config["num-shards"] = self.num_shards
         config["client_debug_port"] = self.client_debug_port
 
         messages = []
         for node_id in node_ids:
-            config["queue_id"], config["queue_epoch"], config["queue_batch"] = assignments[node_id]
+            config["shard_id"], config["processed_batches"] = assignments[node_id]
             record = RecordDict({self.arrayrecord_key: arrays, self.configrecord_key: config})
             message = Message(content=record, message_type=MessageType.TRAIN, dst_node_id=node_id)
             messages.append(message)
@@ -96,19 +96,18 @@ class PilotAvg(Strategy):
         replies: Iterable[Message],
     ) -> tuple[Optional[ArrayRecord], Optional[MetricRecord]]:
         """Aggregate ArrayRecords and MetricRecords in the received Messages."""
-        # Update queue states from worker results
-        results_list = list(results)
+        # Update shard states from worker results
+        results_list = list(replies)
         for result in results_list:
-            metrics = result.content["metrics"]
-            queue_id = metrics.get("queue-id")
-            if queue_id is not None:
-                final_batch_idx = metrics["final-batch-idx"]
-                final_epoch = metrics["final-epoch"]
-                self.queue_manager.update(queue_id, final_batch_idx, final_epoch)
+            metrics: MetricRecord = result.content["metrics"]
+            shard_id: int = metrics["shard-id"]
+            if shard_id is not None:
+                new_processed_batches: int = metrics["new_processed_batches"]
+                self.shard_manager.update(shard_id, new_processed_batches)
 
-                print(f"[Round {server_round}] Updated Queue {queue_id}: "
-                      f"epoch={final_epoch}, batch={final_batch_idx}")
-        print(f"[Round {server_round}] Final queue states: {self.queue_manager.queue_states}")
+                print(f"[Round {server_round}] Updated Shard {shard_id}: "
+                      f"batches={new_processed_batches}")
+        print(f"[Round {server_round}] Final shard states: {self.shard_manager.shard_states}")
 
         # Default FedAvg aggregation
         valid_replies, _ = self._check_and_log_replies(replies, is_train=True)
@@ -231,7 +230,7 @@ def main(grid: Grid, context: Context) -> None:
     num_rounds: int = context.run_config["num-server-rounds"]
     lr: float = context.run_config["learning-rate"]
     dataset_name: str = context.run_config["dataset-name"]
-    num_queues: int = context.run_config["num-queues"]
+    num_shards: int = context.run_config["num-shards"]
     # round_interval_seconds: float = context.run_config["round-interval-seconds"]
 
     server_debug_port: int = context.run_config["server_debug_port"]
@@ -248,10 +247,10 @@ def main(grid: Grid, context: Context) -> None:
     global_model = get_model(model_type)
     arrays = ArrayRecord(global_model.state_dict())
 
-    # Initialize FedAvg strategy with queue management
+    # Initialize FedAvg strategy with shard management
     strategy = PilotAvg(
         dataset_name=dataset_name,
-        num_queues=num_queues,
+        num_shards=num_shards,
         client_debug_port=context.run_config["client_debug_port"],
         # round_interval_seconds=round_interval_seconds,
         # schedule_anchor_ts=schedule_anchor_ts,

@@ -30,23 +30,21 @@ def train(msg: Message, context: Context):
 
     config: ConfigRecord = msg.content["config"]
     dataset_name: str = config["dataset-name"]
-    queue_id: int = config["queue_id"]
-    num_queues: int = config["num-queues"]
-    queue_batch: int = config["queue_batch"]
-    queue_epoch: int = config["queue_epoch"]
+    shard_id: int = config["shard_id"]
+    num_shards: int = config["num-shards"]
+    processed_batches: int = config["processed_batches"]
 
     trainloader = get_train_loader(
         dataset_name=dataset_name,
-        shard_id=queue_id,
-        num_shards=num_queues,
-        start_batch_idx=queue_batch,
-        epoch=queue_epoch,
+        shard_id=shard_id,
+        num_shards=num_shards,
+        processed_batches=processed_batches,
         batch_size=context.run_config["batch-size"],
     )
 
     # Print training information
-    print(f"[Worker {partition_id}] Assigned to Queue {queue_id} ({num_queues} queues)")
-    print(f"[Worker {partition_id}] Starting at epoch {queue_batch}, batch {queue_epoch}")
+    print(f"[Worker {partition_id}] Assigned to Shard {shard_id} ({num_shards} shards)")
+    print(f"[Worker {partition_id}] Starting at batch {processed_batches}")
     print(f"[Worker {partition_id}] Device: {device}")
 
     # Call the training function with progress tracking
@@ -59,21 +57,17 @@ def train(msg: Message, context: Context):
     )
 
     # Calculate final position
-    # TODO the new_queue_batch calculation is not correct
-    new_queue_batch = queue_batch + batches_processed
-    new_queue_epoch = queue_epoch + epochs_completed
+    new_processed_batches = processed_batches + batches_processed
 
     print(f"[Worker {partition_id}] Completed: processed {batches_processed} batches")
-    print(f"[Worker {partition_id}] New position: epoch {final_epoch}, batch {final_batch_idx}")
+    print(f"[Worker {partition_id}] New position: {new_processed_batches} batches")
 
-    # Construct and return reply Message with queue state
+    # Construct and return reply Message with shard state
     model_record = ArrayRecord(model.state_dict())
     metrics = {
         "train_loss": train_loss,
-        "num-examples": batches_processed * batch_size,
-        "queue-id": queue_id,
-        "final-batch-idx": final_batch_idx,
-        "final-epoch": final_epoch,
+        "shard-id": shard_id,
+        "new_processed_batches": new_processed_batches,
         "batches-processed": batches_processed,
     }
     metric_record = MetricRecord(metrics)
