@@ -15,7 +15,7 @@ def train(msg: Message, context: Context):
     """Train the model on queue-assigned data."""
     partition_id = context.node_config["partition_id"]  # Worker index (0, 1, 2...)
 
-    client_debug_port = context.run_config["client_debug_port"]
+    client_debug_port = context.run_config.get("client_debug_port", None)
     if client_debug_port and partition_id == 0:
         print("[Client 0] Debug mode enabled...")
         import pydevd_pycharm

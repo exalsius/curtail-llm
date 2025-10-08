@@ -79,7 +79,8 @@ class PilotAvg(Strategy):
         config["server_round"] = server_round
         config["dataset_name"] = self.dataset_name
         config["num_shards"] = self.num_shards
-        config["client_debug_port"] = self.client_debug_port
+        if self.client_debug_port:
+            config["client_debug_port"] = self.client_debug_port
 
         messages = []
         for node_id in node_ids:
@@ -233,7 +234,7 @@ def main(grid: Grid, context: Context) -> None:
     num_shards: int = context.run_config["num_shards"]
     # round_interval_seconds: float = context.run_config["round_interval_seconds"]
 
-    server_debug_port: int = context.run_config["server_debug_port"]
+    server_debug_port: int = context.run_config.get("server_debug_port", None)
     if server_debug_port:
         print("[Server] Debug mode enabled...")
         import pydevd_pycharm
@@ -251,7 +252,7 @@ def main(grid: Grid, context: Context) -> None:
     strategy = PilotAvg(
         dataset_name=dataset_name,
         num_shards=num_shards,
-        client_debug_port=context.run_config["client_debug_port"],
+        client_debug_port=context.run_config.get("client_debug_port", None),
         # round_interval_seconds=round_interval_seconds,
         # schedule_anchor_ts=schedule_anchor_ts,
     )
