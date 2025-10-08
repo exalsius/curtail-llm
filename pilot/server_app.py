@@ -23,8 +23,6 @@ class NewStrategy(Strategy):
 
     Parameters
     ----------
-    min_available_nodes : int (default: 2)
-        Minimum number of total nodes in the system.
     weighted_by_key : str (default: "num-examples")
         The key within each MetricRecord whose value is used as the weight when
         computing weighted averages for both ArrayRecords and MetricRecords.
@@ -47,7 +45,6 @@ class NewStrategy(Strategy):
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     def __init__(
         self,
-        min_available_nodes: int = 2,
         weighted_by_key: str = "num-examples",
         arrayrecord_key: str = "arrays",
         configrecord_key: str = "config",
@@ -58,7 +55,6 @@ class NewStrategy(Strategy):
             Callable[[list[RecordDict], str], MetricRecord]
         ] = None,
     ) -> None:
-        self.min_available_nodes = min_available_nodes
         self.weighted_by_key = weighted_by_key
         self.arrayrecord_key = arrayrecord_key
         self.configrecord_key = configrecord_key
@@ -93,13 +89,11 @@ class NewStrategy(Strategy):
     ) -> Iterable[Message]:
         """Configure the next round of federated training."""
         # Sample nodes
-        num_nodes = len(list(grid.get_node_ids()))
-        node_ids, num_total = sample_nodes(grid, self.min_available_nodes, num_nodes)
+        node_ids = list(grid.get_node_ids())
         log(
             INFO,
-            "configure_train: Sampled %s nodes (out of %s)",
+            "configure_train: Training on all %s nodes",
             len(node_ids),
-            len(num_total),
         )
         # Always inject current server round
         config["server-round"] = server_round
@@ -201,13 +195,11 @@ class NewStrategy(Strategy):
     ) -> Iterable[Message]:
         """Configure the next round of federated evaluation."""
         # Sample nodes
-        num_nodes = len(list(grid.get_node_ids()))
-        node_ids, num_total = sample_nodes(grid, self.min_available_nodes, num_nodes)
+        node_ids = list(grid.get_node_ids())
         log(
             INFO,
-            "configure_evaluate: Sampled %s nodes (out of %s)",
+            "configure_evaluate: Evaluating on all %s nodes",
             len(node_ids),
-            len(num_total),
         )
 
         # Always inject current server round
