@@ -10,7 +10,7 @@ from flwr.serverapp import ServerApp
 from flwr.serverapp.strategy import FedAvg
 
 from pilot.models import get_model
-from pilot.data import get_train_loader, QueueManager
+from pilot.data import get_test_loader, QueueManager
 from pilot.train_test import test
 
 app = ServerApp()
@@ -40,8 +40,8 @@ class PilotAvg(FedAvg):
         self._deadline_iter: Iterator[pd.Timestamp] = self._build_deadline_iter(anchor)
 
         # Queue management
-        queue_manager = QueueManager(num_queues=num_queues)
-        print(f"\n[Server] Initialized {queue_manager}")
+        self.queue_manager = QueueManager(num_queues=num_queues)
+        print(f"\n[Server] Initialized {self.queue_manager}")
         self.dataset_name = dataset_name
 
     def _build_deadline_iter(self, anchor: pd.Timestamp) -> Iterator[pd.Timestamp]:
@@ -124,16 +124,16 @@ def main(grid: Grid, context: Context) -> None:
         round_interval_seconds=round_interval_seconds,
         schedule_anchor_ts=schedule_anchor_ts,
         dataset_name=dataset_name,
-        num_queues=10,
+        num_queues=num_queues,
     )
 
     # Start strategy, run FedAvg for `num_rounds`
     result = strategy.start(
         grid=grid,
         initial_arrays=arrays,
-        train_config=ConfigRecord(dict(lr=lr, debug=debug)),
+        train_config=ConfigRecord(dict(lr=lr)),
         num_rounds=num_rounds,
-        evaluate_fn=global_evaluate,
+        evaluate_fn=lambda round, arrays: global_evaluate(round, arrays, model_type, dataset_name),
     )
 
     # Save final model to disk
@@ -142,8 +142,8 @@ def main(grid: Grid, context: Context) -> None:
     torch.save(state_dict, "final_model.pt")
 
 
-def global_evaluate(server_round: int, arrays: ArrayRecord, model_type: str = "resnet18") -> MetricRecord:
-    """Evaluate model on central data."""
+def global_evaluate(server_round: int, arrays: ArrayRecord, model_type: str, dataset_name: str) -> MetricRecord:
+    """Evaluate model on central test data."""
 
     # Load the model and initialize it with the received weights
     model = get_model(model_type)
@@ -151,17 +151,8 @@ def global_evaluate(server_round: int, arrays: ArrayRecord, model_type: str = "r
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    # Load entire test set (num_shards=1 gives full dataset)
-    test_dataloader = get_train_loader(
-        dataset_name="uoft-cs/cifar10",
-        shard_id=0,
-        num_shards=1,
-        start_batch_idx=0,
-        epoch=0,
-        batch_size=128,
-        data_format="image",
-        model_type=model_type,
-    )
+    # Load test set
+    test_dataloader = get_test_loader(dataset_name=dataset_name, batch_size=128)
 
     # Evaluate the global model on the test set
     test_loss, test_acc = test(model, test_dataloader, device)

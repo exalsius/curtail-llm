@@ -51,30 +51,26 @@ serverapp = "pilot.server_app:app"
 clientapp = "pilot.client_app:app"
 
 [tool.flwr.app.config]
-num-server-rounds = 3
-fraction-evaluate = 0.5
+num-server-rounds = 10
+fraction-evaluate = 0.2
 local-epochs = 1
 learning-rate = 0.1
 batch-size = 32
-debug = true
+debug = false
 round-interval-seconds = 300
-num-queues = 3
+num-queues = 1
 dataset-name = "uoft-cs/cifar10"
-data-format = "image"
-llm-task = "medical"
-model-type = "resnet18"
+model-type = "simple_cnn"
 
 [tool.flwr.federations]
 default = "local-simulation"
 
 [tool.flwr.federations.local-simulation]
-options.num-supernodes = 10
+options.num-supernodes = 1
 
 [tool.flwr.federations.local-simulation-gpu]
-options.num-supernodes = 10
-options.backend.client-resources.num-cpus = 2 # each ClientApp assumes to use 2CPUs
-options.backend.client-resources.num-gpus = 0.2 # at most 5 ClientApp will run in a given GPU
-
+options.num-supernodes = 1
+options.backend.client-resources.num-gpus = 0.3
 
 [tool.flwr.federations.local-deployment]
 address = "127.0.0.1:9093"
