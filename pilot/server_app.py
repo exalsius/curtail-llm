@@ -31,10 +31,6 @@ class PilotAvg(Strategy):
     weighted_by_key : str (default: "num-examples")
         The key within each MetricRecord whose value is used as the weight when
         computing weighted averages for both ArrayRecords and MetricRecords.
-    arrayrecord_key : str (default: "arrays")
-        Key used to store the ArrayRecord when constructing Messages.
-    configrecord_key : str (default: "config")
-        Key used to store the ConfigRecord when constructing Messages.
     """
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -43,26 +39,17 @@ class PilotAvg(Strategy):
         dataset_name: str,
         num_shards: int,
         client_debug_port: bool,
-        weighted_by_key: str = "num-examples",
-        arrayrecord_key: str = "arrays",
-        configrecord_key: str = "config",
     ) -> None:
         self.dataset_name = dataset_name
         self.num_shards = num_shards
         self.shard_manager = ShardManager(num_shards=num_shards)
         self.client_debug_port = client_debug_port
-        self.weighted_by_key = weighted_by_key
-        self.arrayrecord_key = arrayrecord_key
-        self.configrecord_key = configrecord_key
+        self.weighted_by_key = "batches_processed"
 
     def summary(self) -> None:
         """Log summary configuration of the strategy."""
         log(INFO, "\t└──> Dataset: '%s'", self.dataset_name)
         log(INFO, "\t└──> Shard: '%s'", self.shard_manager)
-        log(INFO, "\t└──> Keys in records:")
-        log(INFO, "\t\t├── Weighted by: '%s'", self.weighted_by_key)
-        log(INFO, "\t\t├── ArrayRecord key: '%s'", self.arrayrecord_key)
-        log(INFO, "\t\t└── ConfigRecord key: '%s'", self.configrecord_key)
 
     def configure_train(
         self, server_round: int, arrays: ArrayRecord, config: ConfigRecord, grid: Grid
@@ -85,7 +72,7 @@ class PilotAvg(Strategy):
         messages = []
         for node_id in node_ids:
             config["shard_id"], config["processed_batches"] = assignments[node_id]
-            record = RecordDict({self.arrayrecord_key: arrays, self.configrecord_key: config})
+            record = RecordDict({"arrays": arrays, "config": config})
             message = Message(content=record, message_type=MessageType.TRAIN, dst_node_id=node_id)
             messages.append(message)
 
@@ -98,16 +85,9 @@ class PilotAvg(Strategy):
     ) -> tuple[Optional[ArrayRecord], Optional[MetricRecord]]:
         """Aggregate ArrayRecords and MetricRecords in the received Messages."""
         # Update shard states from worker results
-        results_list = list(replies)
-        for result in results_list:
-            metrics: MetricRecord = result.content["metrics"]
-            shard_id: int = metrics["shard_id"]
-            if shard_id is not None:
-                new_processed_batches: int = metrics["new_processed_batches"]
-                self.shard_manager.update(shard_id, new_processed_batches)
-
-                print(f"[Round {server_round}] Updated Shard {shard_id}: "
-                      f"batches={new_processed_batches}")
+        for reply in replies:
+            metrics: MetricRecord = reply.content["metrics"]
+            self.shard_manager.add(metrics["shard_id"], metrics["batches_processed"])
         print(f"[Round {server_round}] Final shard states: {self.shard_manager.shard_states}")
 
         # Default FedAvg aggregation
@@ -123,11 +103,12 @@ class PilotAvg(Strategy):
         self, server_round: int, arrays: ArrayRecord, config: ConfigRecord, grid: Grid
     ) -> Iterable[Message]:
         """Configure the next round of federated evaluation."""
+        return []
         node_ids = list(grid.get_node_ids())
         log(INFO, "configure_evaluate: Evaluating on all %s nodes", len(node_ids))
 
         config["server_round"] = server_round
-        record = RecordDict({self.arrayrecord_key: arrays, self.configrecord_key: config})
+        record = RecordDict({"arrays": arrays, "config": config})
         messages = [Message(content=record, message_type=MessageType.EVALUATE, dst_node_id=node_id)
                     for node_id in node_ids]
         return messages

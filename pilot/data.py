@@ -43,9 +43,9 @@ class ShardManager:
 
         return assignments
 
-    def update(self, shard_id: int, processed_batches: int):
+    def add(self, shard_id: int, processed_batches: int):
         """Update the state of a shard after training."""
-        self.shard_states[shard_id] = processed_batches
+        self.shard_states[shard_id] += processed_batches
 
     def __repr__(self):
         return f"ShardManager(num_shards={self.num_shards}, states={self.shard_states})"

@@ -1,7 +1,9 @@
+from logging import INFO
+
 import torch
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
-from flwr.common import ConfigRecord
+from flwr.common import ConfigRecord, log
 
 from pilot.models import get_model
 from pilot.data import get_train_loader
@@ -13,9 +15,10 @@ app = ClientApp()
 @app.train()
 def train(msg: Message, context: Context):
     """Train the model on queue-assigned data."""
-    partition_id = context.node_config["partition_id"]  # Worker index (0, 1, 2...)
+    partition_id = context.node_config["partition-id"]  # Worker index (0, 1, 2...)
+    config: ConfigRecord = msg.content["config"]
 
-    client_debug_port = context.run_config.get("client_debug_port", None)
+    client_debug_port = config.get("client_debug_port", None)
     if client_debug_port and partition_id == 0:
         print("[Client 0] Debug mode enabled...")
         import pydevd_pycharm
@@ -28,7 +31,6 @@ def train(msg: Message, context: Context):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    config: ConfigRecord = msg.content["config"]
     dataset_name: str = config["dataset_name"]
     shard_id: int = config["shard_id"]
     num_shards: int = config["num_shards"]
@@ -44,9 +46,9 @@ def train(msg: Message, context: Context):
     )
 
     # Print training information
-    print(f"[Worker {partition_id}] Assigned to Shard {shard_id} ({num_shards} shards)")
-    print(f"[Worker {partition_id}] Starting at batch {processed_batches}, will process {num_batches} batches")
-    print(f"[Worker {partition_id}] Device: {device}")
+    log(INFO, f"[Worker {partition_id}] Processing batch {processed_batches}-{processed_batches + num_batches} "
+              f"of shard {shard_id} ({num_shards} shards)")
+    log(INFO, f"[Worker {partition_id}] Device: {device}")
 
     # Call the training function with progress tracking
     train_loss, batches_processed = train_fn(
@@ -57,18 +59,11 @@ def train(msg: Message, context: Context):
         device=device,
     )
 
-    # Calculate final position
-    new_processed_batches = processed_batches + batches_processed
-
-    print(f"[Worker {partition_id}] Completed: processed {batches_processed} batches")
-    print(f"[Worker {partition_id}] New position: {new_processed_batches} batches")
-
     # Construct and return reply Message with shard state
     model_record = ArrayRecord(model.state_dict())
     metrics = {
         "train_loss": train_loss,
         "shard_id": shard_id,
-        "new_processed_batches": new_processed_batches,
         "batches_processed": batches_processed,
     }
     metric_record = MetricRecord(metrics)
