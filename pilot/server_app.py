@@ -20,13 +20,13 @@ from pilot.train_test import test
 app = ServerApp()
 
 
-class NewStrategy(Strategy):
-    """Federated Averaging strategy.
-
-    Implementation based on https://arxiv.org/abs/1602.05629
+class PilotAvg(Strategy):
+    """Custom Pilot Strategy based on FedAvg.
 
     Parameters
     ----------
+    num_queues : int
+        Number of data queues to manage.
     weighted_by_key : str (default: "num-examples")
         The key within each MetricRecord whose value is used as the weight when
         computing weighted averages for both ArrayRecords and MetricRecords.
@@ -39,10 +39,14 @@ class NewStrategy(Strategy):
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     def __init__(
         self,
+        num_queues: int,
         weighted_by_key: str = "num-examples",
         arrayrecord_key: str = "arrays",
         configrecord_key: str = "config",
     ) -> None:
+        self.queue_manager = QueueManager(num_queues=num_queues)
+        print(f"\n[Server] Initialized {self.queue_manager}")
+
         self.weighted_by_key = weighted_by_key
         self.arrayrecord_key = arrayrecord_key
         self.configrecord_key = configrecord_key
@@ -61,8 +65,13 @@ class NewStrategy(Strategy):
         node_ids = list(grid.get_node_ids())
         log(INFO, "configure_train: Training on all %s nodes", len(node_ids))
 
-        config["server-round"] = server_round
+        # Get worker assignments from queue manager
+        assignments = self.queue_manager.assign_workers(node_ids)
+        print(f"\n[Round {server_round}] Assigning {len(assignments)} workers to queues")
+        print(f"[Round {server_round}] Queue states: {self.queue_manager.queue_states}")
+        config["assignments"] = assignments  # List of (queue_id, epoch, batch_idx)
 
+        config["server-round"] = server_round
         record = RecordDict({self.arrayrecord_key: arrays, self.configrecord_key: config})
         return self._construct_messages(record, node_ids, MessageType.TRAIN)
 
@@ -72,6 +81,21 @@ class NewStrategy(Strategy):
         replies: Iterable[Message],
     ) -> tuple[Optional[ArrayRecord], Optional[MetricRecord]]:
         """Aggregate ArrayRecords and MetricRecords in the received Messages."""
+        # Update queue states from worker results
+        results_list = list(results)
+        for result in results_list:
+            metrics = result.content["metrics"]
+            queue_id = metrics.get("queue-id")
+            if queue_id is not None:
+                final_batch_idx = metrics["final-batch-idx"]
+                final_epoch = metrics["final-epoch"]
+                self.queue_manager.update(queue_id, final_batch_idx, final_epoch)
+
+                print(f"[Round {server_round}] Updated Queue {queue_id}: "
+                      f"epoch={final_epoch}, batch={final_batch_idx}")
+        print(f"[Round {server_round}] Final queue states: {self.queue_manager.queue_states}")
+
+        # Default FedAvg aggregation
         valid_replies, _ = self._check_and_log_replies(replies, is_train=True)
         arrays, metrics = None, None
         if valid_replies:
@@ -88,7 +112,6 @@ class NewStrategy(Strategy):
         log(INFO, "configure_evaluate: Evaluating on all %s nodes", len(node_ids))
 
         config["server-round"] = server_round
-
         record = RecordDict({self.arrayrecord_key: arrays, self.configrecord_key: config})
         return self._construct_messages(record, node_ids, MessageType.EVALUATE)
 
@@ -170,7 +193,7 @@ class NewStrategy(Strategy):
         return valid_replies, error_replies
 
 
-class PilotAvg(FedAvg):
+class OldPilotAvg(FedAvg):
     """FedAvg with time-based scheduling and queue-based data management."""
 
     def __init__(
@@ -178,8 +201,6 @@ class PilotAvg(FedAvg):
         *,
         round_interval_seconds: float,
         schedule_anchor_ts: float,
-        dataset_name: str,
-        num_queues: int,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -188,62 +209,13 @@ class PilotAvg(FedAvg):
         anchor = pd.Timestamp.utcfromtimestamp(schedule_anchor_ts)
         self._deadline_iter: Iterator[pd.Timestamp] = self._build_deadline_iter(anchor)
 
-        # Queue management
-        self.queue_manager = QueueManager(num_queues=num_queues)
-        print(f"\n[Server] Initialized {self.queue_manager}")
-        self.dataset_name = dataset_name
-
-    def _build_deadline_iter(self, anchor: pd.Timestamp) -> Iterator[pd.Timestamp]:
-        next_boundary = anchor.floor(self._interval_delta) + self._interval_delta
-        while True:
-            yield next_boundary
-            next_boundary = next_boundary + self._interval_delta
-
     def configure_train(
         self, server_round: int, arrays: ArrayRecord, config: ConfigRecord, grid: Grid
     ) -> Iterable[Message]:
         """Configure train round with queue assignments and timing metadata."""
-
-        # Get worker assignments from queue manager
-        num_available = grid.num_nodes()
-        assignments = self.queue_manager.assign_workers(num_available)
-
-        print(f"\n[Round {server_round}] Assigning {len(assignments)} workers to queues")
-        print(f"[Round {server_round}] Queue states: {self.queue_manager.queue_states}")
-
-        # Inject queue assignments into config
-        config["num-queues"] = self.queue_manager.num_queues
-        config["dataset-name"] = self.dataset_name
-        config["assignments"] = assignments  # List of (queue_id, epoch, batch_idx)
-
         # Add round deadline
         config["round-deadline"] = next(self._deadline_iter).timestamp()
 
-        return super().configure_train(server_round, arrays, config, grid)
-
-    def aggregate_train(
-        self, server_round: int, results: Iterable[Message], grid: Grid
-    ) -> tuple[ArrayRecord, ConfigRecord]:
-        """Aggregate results and update queue states."""
-
-        # Update queue states from worker results
-        results_list = list(results)
-        for result in results_list:
-            metrics = result.content["metrics"]
-            queue_id = metrics.get("queue-id")
-
-            if queue_id is not None:
-                final_batch_idx = metrics["final-batch-idx"]
-                final_epoch = metrics["final-epoch"]
-                self.queue_manager.update(queue_id, final_batch_idx, final_epoch)
-
-                print(f"[Round {server_round}] Updated Queue {queue_id}: "
-                      f"epoch={final_epoch}, batch={final_batch_idx}")
-
-        print(f"[Round {server_round}] Final queue states: {self.queue_manager.queue_states}")
-
-        # Call parent aggregate_train with the original results iterator
-        return super().aggregate_train(server_round, iter(results_list), grid)
 
 
 @app.main()
@@ -251,7 +223,6 @@ def main(grid: Grid, context: Context) -> None:
     """Main entry point for the ServerApp."""
 
     # Read run config
-    fraction_evaluate: float = context.run_config["fraction-evaluate"]
     num_rounds: int = context.run_config["num-server-rounds"]
     lr: float = context.run_config["learning-rate"]
     debug: bool = context.run_config["debug"]
@@ -269,7 +240,6 @@ def main(grid: Grid, context: Context) -> None:
 
     # Initialize FedAvg strategy with queue management
     strategy = PilotAvg(
-        fraction_evaluate=fraction_evaluate,
         round_interval_seconds=round_interval_seconds,
         schedule_anchor_ts=schedule_anchor_ts,
         dataset_name=dataset_name,
