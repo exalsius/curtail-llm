@@ -49,9 +49,6 @@ def train(msg: Message, context: Context):
         start_batch_idx=start_batch_idx,
         epoch=epoch,
         batch_size=batch_size,
-        data_format=context.run_config.get("data-format", "image"),
-        llm_task=context.run_config.get("llm-task", "medical"),
-        model_type=model_type,
     )
 
     # Print training information
