@@ -23,14 +23,6 @@ class NewStrategy(Strategy):
 
     Parameters
     ----------
-    fraction_train : float (default: 1.0)
-        Fraction of nodes used during training. In case `min_train_nodes`
-        is larger than `fraction_train * total_connected_nodes`, `min_train_nodes`
-        will still be sampled.
-    fraction_evaluate : float (default: 1.0)
-        Fraction of nodes used during validation. In case `min_evaluate_nodes`
-        is larger than `fraction_evaluate * total_connected_nodes`,
-        `min_evaluate_nodes` will still be sampled.
     min_available_nodes : int (default: 2)
         Minimum number of total nodes in the system.
     weighted_by_key : str (default: "num-examples")
@@ -55,8 +47,6 @@ class NewStrategy(Strategy):
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     def __init__(
         self,
-        fraction_train: float = 1.0,
-        fraction_evaluate: float = 1.0,
         min_available_nodes: int = 2,
         weighted_by_key: str = "num-examples",
         arrayrecord_key: str = "arrays",
@@ -68,8 +58,6 @@ class NewStrategy(Strategy):
             Callable[[list[RecordDict], str], MetricRecord]
         ] = None,
     ) -> None:
-        self.fraction_train = fraction_train
-        self.fraction_evaluate = fraction_evaluate
         self.min_available_nodes = min_available_nodes
         self.weighted_by_key = weighted_by_key
         self.arrayrecord_key = arrayrecord_key
@@ -81,14 +69,6 @@ class NewStrategy(Strategy):
 
     def summary(self) -> None:
         """Log summary configuration of the strategy."""
-        log(INFO, "\t├──> Sampling:")
-        log(
-            INFO,
-            "\t│\t├──Fraction: train (%.2f) | evaluate ( %.2f)",
-            self.fraction_train,
-            self.fraction_evaluate,
-        )  # pylint: disable=line-too-long
-        log(INFO, "\t│\t└──Minimum available nodes: %d", self.min_available_nodes)
         log(INFO, "\t└──> Keys in records:")
         log(INFO, "\t\t├── Weighted by: '%s'", self.weighted_by_key)
         log(INFO, "\t\t├── ArrayRecord key: '%s'", self.arrayrecord_key)
@@ -112,11 +92,8 @@ class NewStrategy(Strategy):
         self, server_round: int, arrays: ArrayRecord, config: ConfigRecord, grid: Grid
     ) -> Iterable[Message]:
         """Configure the next round of federated training."""
-        # Do not configure federated train if fraction_train is 0.
-        if self.fraction_train == 0.0:
-            return []
         # Sample nodes
-        num_nodes = int(len(list(grid.get_node_ids())) * self.fraction_train)
+        num_nodes = len(list(grid.get_node_ids()))
         node_ids, num_total = sample_nodes(grid, self.min_available_nodes, num_nodes)
         log(
             INFO,
@@ -223,12 +200,8 @@ class NewStrategy(Strategy):
         self, server_round: int, arrays: ArrayRecord, config: ConfigRecord, grid: Grid
     ) -> Iterable[Message]:
         """Configure the next round of federated evaluation."""
-        # Do not configure federated evaluation if fraction_evaluate is 0.
-        if self.fraction_evaluate == 0.0:
-            return []
-
         # Sample nodes
-        num_nodes = int(len(list(grid.get_node_ids())) * self.fraction_evaluate)
+        num_nodes = len(list(grid.get_node_ids()))
         node_ids, num_total = sample_nodes(grid, self.min_available_nodes, num_nodes)
         log(
             INFO,
