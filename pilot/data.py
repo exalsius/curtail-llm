@@ -32,10 +32,10 @@ class QueueManager:
         queue_progress.sort(key=lambda x: (x[1], x[2]))
 
         # Assign workers to the queues with least progress
-        assignments = []
+        assignments = {}
         for i, node_id in enumerate(node_ids):
             queue_id, epoch, batch_idx = queue_progress[i]
-            assignments.append((queue_id, epoch, batch_idx))
+            assignments[node_id] = (queue_id, epoch, batch_idx)
 
         return assignments
 

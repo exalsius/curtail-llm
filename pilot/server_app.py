@@ -1,20 +1,22 @@
-import time
 from collections.abc import Iterator
-from typing import Iterable
+from logging import INFO
+from typing import Iterable, Optional
 
 import pandas as pd
 import torch
 from flwr.app import ArrayRecord, ConfigRecord, Context, MetricRecord, Message
+from flwr.common import log, RecordDict, MessageType
 from flwr.server.grid.grid import Grid
 from flwr.serverapp import ServerApp
-from flwr.serverapp.strategy_utils import (
+from flwr.serverapp.strategy import Strategy
+from flwr.serverapp.strategy.strategy_utils import (
     aggregate_arrayrecords,
     aggregate_metricrecords,
     validate_message_reply_consistency,
 )
 
-from pilot.models import get_model
 from pilot.data import get_test_loader, QueueManager
+from pilot.models import get_model
 from pilot.train_test import test
 
 app = ServerApp()
@@ -48,8 +50,6 @@ class PilotAvg(Strategy):
         self.dataset_name = dataset_name
         self.num_queues = num_queues
         self.queue_manager = QueueManager(num_queues=num_queues)
-        print(f"\n[Server] Initialized {self.queue_manager}")
-
         self.debug = debug
         self.weighted_by_key = weighted_by_key
         self.arrayrecord_key = arrayrecord_key
@@ -57,6 +57,8 @@ class PilotAvg(Strategy):
 
     def summary(self) -> None:
         """Log summary configuration of the strategy."""
+        log(INFO, "\t└──> Dataset: '%s'", self.dataset_name)
+        log(INFO, "\t└──> Queue: '%s'", self.queue_manager)
         log(INFO, "\t└──> Keys in records:")
         log(INFO, "\t\t├── Weighted by: '%s'", self.weighted_by_key)
         log(INFO, "\t\t├── ArrayRecord key: '%s'", self.arrayrecord_key)
@@ -73,15 +75,20 @@ class PilotAvg(Strategy):
         assignments = self.queue_manager.assign_workers(node_ids)
         print(f"\n[Round {server_round}] Assigning {len(assignments)} workers to queues")
         print(f"[Round {server_round}] Queue states: {self.queue_manager.queue_states}")
-        config["assignments"] = assignments  # List of (queue_id, epoch, batch_idx)
 
+        config["server-round"] = server_round
         config["dataset-name"] = self.dataset_name
         config["num-queues"] = self.num_queues
         config["debug"] = self.debug
 
-        config["server-round"] = server_round
-        record = RecordDict({self.arrayrecord_key: arrays, self.configrecord_key: config})
-        return self._construct_messages(record, node_ids, MessageType.TRAIN)
+        messages = []
+        for node_id in node_ids:
+            config["queue_id"], config["queue_epoch"], config["queue_batch"] = assignments[node_id]
+            record = RecordDict({self.arrayrecord_key: arrays, self.configrecord_key: config})
+            message = Message(content=record, message_type=MessageType.TRAIN, dst_node_id=node_id)
+            messages.append(message)
+
+        return messages
 
     def aggregate_train(
         self,
@@ -121,7 +128,9 @@ class PilotAvg(Strategy):
 
         config["server-round"] = server_round
         record = RecordDict({self.arrayrecord_key: arrays, self.configrecord_key: config})
-        return self._construct_messages(record, node_ids, MessageType.EVALUATE)
+        messages = [Message(content=record, message_type=MessageType.EVALUATE, dst_node_id=node_id)
+                    for node_id in node_ids]
+        return messages
 
     def aggregate_evaluate(
         self,
@@ -141,13 +150,6 @@ class PilotAvg(Strategy):
         while True:
             yield next_boundary
             next_boundary = next_boundary + self._interval_delta
-
-    def _construct_messages(
-        self, record: RecordDict, node_ids: list[int], message_type: str
-    ) -> Iterable[Message]:
-        """Construct N Messages carrying the same RecordDict payload."""
-        messages = [Message(content=record, message_type=message_type, dst_node_id=node_id) for node_id in node_ids]
-        return messages
 
     def _check_and_log_replies(
         self, replies: Iterable[Message], is_train: bool, validate: bool = True
@@ -201,28 +203,25 @@ class PilotAvg(Strategy):
         return valid_replies, error_replies
 
 
-class OldPilotAvg(FedAvg):
-    """FedAvg with time-based scheduling and queue-based data management."""
-
-    def __init__(
-        self,
-        *,
-        round_interval_seconds: float,
-        schedule_anchor_ts: float,
-        **kwargs,
-    ) -> None:
-        super().__init__(**kwargs)
-        self.round_interval_seconds = round_interval_seconds
-        self._interval_delta = pd.to_timedelta(round_interval_seconds, unit="s")
-        anchor = pd.Timestamp.utcfromtimestamp(schedule_anchor_ts)
-        self._deadline_iter: Iterator[pd.Timestamp] = self._build_deadline_iter(anchor)
-
-    def configure_train(
-        self, server_round: int, arrays: ArrayRecord, config: ConfigRecord, grid: Grid
-    ) -> Iterable[Message]:
-        """Configure train round with queue assignments and timing metadata."""
-        # Add round deadline
-        config["round-deadline"] = next(self._deadline_iter).timestamp()
+# class OldPilotAvg:
+#     """FedAvg with time-based scheduling and queue-based data management."""
+#
+#     def __init__(
+#         self,
+#         round_interval_seconds: float,
+#         schedule_anchor_ts: float,
+#     ) -> None:
+#         self.round_interval_seconds = round_interval_seconds
+#         self._interval_delta = pd.to_timedelta(round_interval_seconds, unit="s")
+#         anchor = pd.Timestamp.utcfromtimestamp(schedule_anchor_ts)
+#         self._deadline_iter: Iterator[pd.Timestamp] = self._build_deadline_iter(anchor)
+#
+#     def configure_train(
+#         self, server_round: int, arrays: ArrayRecord, config: ConfigRecord, grid: Grid
+#     ) -> Iterable[Message]:
+#         """Configure train round with queue assignments and timing metadata."""
+#         # Add round deadline
+#         config["round-deadline"] = next(self._deadline_iter).timestamp()
 
 
 
@@ -242,20 +241,20 @@ def main(grid: Grid, context: Context) -> None:
         pydevd_pycharm.settrace('localhost', port=5681, stdout_to_server=True, stderr_to_server=True)
 
     # Establish the anchor timestamp for round scheduling
-    schedule_anchor_ts = time.time()
+    # schedule_anchor_ts = time.time()
 
     # Load global model
-    model_type = context.run_config.get("model-type", "resnet18")
+    model_type = context.run_config["model-type"]
     global_model = get_model(model_type)
     arrays = ArrayRecord(global_model.state_dict())
 
     # Initialize FedAvg strategy with queue management
     strategy = PilotAvg(
-        # round_interval_seconds=round_interval_seconds,
-        # schedule_anchor_ts=schedule_anchor_ts,
         dataset_name=dataset_name,
         num_queues=num_queues,
         debug=debug,
+        # round_interval_seconds=round_interval_seconds,
+        # schedule_anchor_ts=schedule_anchor_ts,
     )
 
     # Start strategy, run FedAvg for `num_rounds`
