@@ -13,15 +13,17 @@ class QueueManager:
         # Track (batch_idx, epoch) for each queue
         self.queue_states = [(0, 0) for _ in range(num_queues)]
 
-    def assign_workers(self, num_workers: int):
+    def assign_workers(self, node_ids: list[int]):
         """Assign workers to queues in round-robin fashion.
 
         Returns:
             List of (queue_id, epoch, batch_idx) tuples, one per worker
         """
+        # TODO: We want to addign workers to queues with least progress
+        # TODO: We want to fail if more workers than queues
         assignments = []
-        for worker_idx in range(num_workers):
-            queue_id = worker_idx % self.num_queues
+        for node_id in node_ids:
+            queue_id = node_id % self.num_queues
             batch_idx, epoch = self.queue_states[queue_id]
             assignments.append((queue_id, epoch, batch_idx))
         return assignments

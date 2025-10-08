@@ -21,33 +21,22 @@ def train(msg: Message, context: Context):
         pydevd_pycharm.settrace('localhost', port=5679, stdout_to_server=True, stderr_to_server=True)
 
     # Load the model and initialize it with the received weights
-    model_type = context.run_config.get("model-type", "resnet18")
+    model_type = context.run_config["model-type"]
     model = get_model(model_type)
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
     # Extract queue assignment for this worker
-    partition_id = context.node_config["partition-id"]  # Worker index (0, 1, 2...)
-    assignments = msg.content["config"]["assignments"]
-
-    if partition_id >= len(assignments):
-        raise ValueError(f"Worker {partition_id} has no queue assignment")
-
-    queue_id, epoch, start_batch_idx = assignments[partition_id]
-
-    # Load data from assigned queue
-    batch_size = context.run_config["batch-size"]
-    dataset_name = msg.content["config"]["dataset-name"]
-    num_queues = msg.content["config"]["num-queues"]
+    queue_id, epoch, start_batch_idx = msg.content["config"]["assignments"][partition_id]
 
     trainloader = get_train_loader(
-        dataset_name=dataset_name,
+        dataset_name=msg.content["config"]["dataset-name"],
         shard_id=queue_id,
-        num_shards=num_queues,
+        num_shards=msg.content["config"]["num-queues"],
         start_batch_idx=start_batch_idx,
         epoch=epoch,
-        batch_size=batch_size,
+        batch_size=context.run_config["batch-size"],
     )
 
     # Print training information

@@ -38,12 +38,15 @@ class PilotAvg(Strategy):
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     def __init__(
         self,
+        dataset_name: str,
         num_queues: int,
         debug: bool,
         weighted_by_key: str = "num-examples",
         arrayrecord_key: str = "arrays",
         configrecord_key: str = "config",
     ) -> None:
+        self.dataset_name = dataset_name
+        self.num_queues = num_queues
         self.queue_manager = QueueManager(num_queues=num_queues)
         print(f"\n[Server] Initialized {self.queue_manager}")
 
@@ -72,6 +75,8 @@ class PilotAvg(Strategy):
         print(f"[Round {server_round}] Queue states: {self.queue_manager.queue_states}")
         config["assignments"] = assignments  # List of (queue_id, epoch, batch_idx)
 
+        config["dataset-name"] = self.dataset_name
+        config["num-queues"] = self.num_queues
         config["debug"] = self.debug
 
         config["server-round"] = server_round
@@ -246,8 +251,8 @@ def main(grid: Grid, context: Context) -> None:
 
     # Initialize FedAvg strategy with queue management
     strategy = PilotAvg(
-        round_interval_seconds=round_interval_seconds,
-        schedule_anchor_ts=schedule_anchor_ts,
+        # round_interval_seconds=round_interval_seconds,
+        # schedule_anchor_ts=schedule_anchor_ts,
         dataset_name=dataset_name,
         num_queues=num_queues,
         debug=debug,
