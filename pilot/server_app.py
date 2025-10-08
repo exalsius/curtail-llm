@@ -7,7 +7,11 @@ import torch
 from flwr.app import ArrayRecord, ConfigRecord, Context, MetricRecord, Message
 from flwr.server.grid.grid import Grid
 from flwr.serverapp import ServerApp
-from flwr.serverapp.strategy import FedAvg
+from flwr.serverapp.strategy_utils import (
+    aggregate_arrayrecords,
+    aggregate_metricrecords,
+    validate_message_reply_consistency,
+)
 
 from pilot.models import get_model
 from pilot.data import get_test_loader, QueueManager
@@ -30,16 +34,6 @@ class NewStrategy(Strategy):
         Key used to store the ArrayRecord when constructing Messages.
     configrecord_key : str (default: "config")
         Key used to store the ConfigRecord when constructing Messages.
-    train_metrics_aggr_fn : Optional[callable] (default: None)
-        Function with signature (list[RecordDict], str) -> MetricRecord,
-        used to aggregate MetricRecords from training round replies.
-        If `None`, defaults to `aggregate_metricrecords`, which performs a weighted
-        average using the provided weight factor key.
-    evaluate_metrics_aggr_fn : Optional[callable] (default: None)
-        Function with signature (list[RecordDict], str) -> MetricRecord,
-        used to aggregate MetricRecords from training round replies.
-        If `None`, defaults to `aggregate_metricrecords`, which performs a weighted
-        average using the provided weight factor key.
     """
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -48,20 +42,10 @@ class NewStrategy(Strategy):
         weighted_by_key: str = "num-examples",
         arrayrecord_key: str = "arrays",
         configrecord_key: str = "config",
-        train_metrics_aggr_fn: Optional[
-            Callable[[list[RecordDict], str], MetricRecord]
-        ] = None,
-        evaluate_metrics_aggr_fn: Optional[
-            Callable[[list[RecordDict], str], MetricRecord]
-        ] = None,
     ) -> None:
         self.weighted_by_key = weighted_by_key
         self.arrayrecord_key = arrayrecord_key
         self.configrecord_key = configrecord_key
-        self.train_metrics_aggr_fn = train_metrics_aggr_fn or aggregate_metricrecords
-        self.evaluate_metrics_aggr_fn = (
-            evaluate_metrics_aggr_fn or aggregate_metricrecords
-        )
 
     def summary(self) -> None:
         """Log summary configuration of the strategy."""
@@ -178,16 +162,10 @@ class NewStrategy(Strategy):
             reply_contents = [msg.content for msg in valid_replies]
 
             # Aggregate ArrayRecords
-            arrays = aggregate_arrayrecords(
-                reply_contents,
-                self.weighted_by_key,
-            )
+            arrays = aggregate_arrayrecords(reply_contents, self.weighted_by_key)
 
-            # Aggregate MetricRecords
-            metrics = self.train_metrics_aggr_fn(
-                reply_contents,
-                self.weighted_by_key,
-            )
+            # Aggregate MetricRecords (can be customized)
+            metrics = aggregate_metricrecords(reply_contents, self.weighted_by_key)
         return arrays, metrics
 
     def configure_evaluate(
@@ -223,11 +201,8 @@ class NewStrategy(Strategy):
         if valid_replies:
             reply_contents = [msg.content for msg in valid_replies]
 
-            # Aggregate MetricRecords
-            metrics = self.evaluate_metrics_aggr_fn(
-                reply_contents,
-                self.weighted_by_key,
-            )
+            # Aggregate MetricRecords (can be customized)
+            metrics = aggregate_metricrecords(reply_contents, self.weighted_by_key)
         return metrics
 
 
