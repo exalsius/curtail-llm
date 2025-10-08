@@ -52,9 +52,18 @@ class ShardManager:
 
 
 class ShardedDataset(IterableDataset):
-    """Dataset that shards data and can resume from a specific batch index."""
+    """Dataset that shards data and can resume from a specific batch index.
 
-    def __init__(self, dataset, shard_id, num_shards, processed_batches, batch_size):
+    Yields batches continuously from the shard, wrapping around when reaching the end.
+    The current epoch is inferred from processed_batches for progress tracking.
+    The iterator yields samples infinitely - the consumer (train function) controls
+    how many batches to process.
+
+    Note: For streaming datasets, you must provide shard_size explicitly since
+    len(dataset) is not available. Currently only supports non-streaming datasets.
+    """
+
+    def __init__(self, dataset, shard_id, num_shards, processed_batches, batch_size, shard_size=None):
         self.dataset = dataset
         self.shard_id = shard_id
         self.num_shards = num_shards
@@ -62,17 +71,36 @@ class ShardedDataset(IterableDataset):
         self.batch_size = batch_size
 
         # Calculate this shard's slice of the dataset
-        total_size = len(dataset)
-        shard_size = total_size // num_shards
+        if shard_size is None:
+            total_size = len(dataset)
+            shard_size = total_size // num_shards
         self.start_idx = shard_id * shard_size
-        self.end_idx = self.start_idx + shard_size if shard_id < num_shards - 1 else total_size
+        self.end_idx = self.start_idx + shard_size if shard_id < num_shards - 1 else self.start_idx + shard_size
+        self.shard_size = self.end_idx - self.start_idx
+
+        # Calculate batches per epoch for this shard
+        self.batches_per_shard_epoch = (self.shard_size + batch_size - 1) // batch_size  # ceil division
+
+        # Calculate current epoch and position within epoch (for tracking)
+        self.current_epoch = processed_batches // self.batches_per_shard_epoch
+        self.batch_in_epoch = processed_batches % self.batches_per_shard_epoch
 
     def __iter__(self):
-        # Start from the specified batch index
-        start_sample_idx = self.start_idx + (self.processed_batches * self.batch_size)
+        # Start from the current position within the shard
+        current_batch = self.batch_in_epoch
 
-        for idx in range(start_sample_idx, self.end_idx):
-            yield self.dataset[idx]
+        # Yield batches infinitely, wrapping around the shard
+        while True:
+            # Calculate sample range for current batch
+            sample_start = self.start_idx + (current_batch * self.batch_size)
+            sample_end = min(sample_start + self.batch_size, self.end_idx)
+
+            # Yield all samples in this batch
+            for idx in range(sample_start, sample_end):
+                yield self.dataset[idx]
+
+            # Move to next batch, wrapping around if needed
+            current_batch = (current_batch + 1) % self.batches_per_shard_epoch
 
     def __len__(self):
         return self.end_idx - self.start_idx
@@ -94,25 +122,43 @@ def get_train_loader(
     num_shards: int,
     processed_batches: int,
     batch_size: int,
+    streaming: bool = False,
+    shard_size: int = None,
     **kwargs  # Ignore extra kwargs
 ):
     """Load a shard of the training dataset, resuming from a specific position.
 
+    The loader provides batches continuously from the shard, wrapping around when
+    reaching the end. The train function controls how many batches to consume.
+
     Args:
         dataset_name: HuggingFace dataset name (e.g., "uoft-cs/cifar10")
         shard_id: Which shard this loader belongs to (0 to num_shards-1)
-        num_shards: Total number of shards
+        num_shards: Total number of shards (can be more than workers)
         processed_batches: Number of batches already processed on this shard
         batch_size: Batch size for training
+        streaming: Whether to use streaming mode for large datasets
+        shard_size: Size of each shard (required for streaming datasets)
 
     Returns:
-        DataLoader for the assigned shard
+        DataLoader that yields batches infinitely from the assigned shard
+
+    Note:
+        - The current epoch is automatically inferred from processed_batches
+        - Workers continue on the same shard across epochs for better data locality
+        - The iterator wraps around the shard infinitely - caller controls batch count
+        - For streaming datasets, shard_size must be provided explicitly
     """
     # Load the full training dataset
-    dataset = load_dataset(dataset_name, split="train")
+    dataset = load_dataset(dataset_name, split="train", streaming=streaming)
 
     # Apply transforms
-    dataset = dataset.with_format("torch").with_transform(apply_cifar10_transforms)
+    if not streaming:
+        dataset = dataset.with_format("torch").with_transform(apply_cifar10_transforms)
+    else:
+        # For streaming datasets, transforms are applied differently
+        dataset = dataset.with_format("torch")
+        # Note: May need to handle transforms in the dataset iterator for streaming
 
     # Create sharded dataset that can resume from specific batch
     sharded_dataset = ShardedDataset(
@@ -121,6 +167,7 @@ def get_train_loader(
         num_shards=num_shards,
         processed_batches=processed_batches,
         batch_size=batch_size,
+        shard_size=shard_size,
     )
 
     return DataLoader(sharded_dataset, batch_size=batch_size, shuffle=False)

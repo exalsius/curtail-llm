@@ -33,6 +33,7 @@ def train(msg: Message, context: Context):
     shard_id: int = config["shard_id"]
     num_shards: int = config["num-shards"]
     processed_batches: int = config["processed_batches"]
+    num_batches: int = context.run_config["local-batches"]
 
     trainloader = get_train_loader(
         dataset_name=dataset_name,
@@ -44,16 +45,16 @@ def train(msg: Message, context: Context):
 
     # Print training information
     print(f"[Worker {partition_id}] Assigned to Shard {shard_id} ({num_shards} shards)")
-    print(f"[Worker {partition_id}] Starting at batch {processed_batches}")
+    print(f"[Worker {partition_id}] Starting at batch {processed_batches}, will process {num_batches} batches")
     print(f"[Worker {partition_id}] Device: {device}")
 
     # Call the training function with progress tracking
-    train_loss, batches_processed, epochs_completed = train_fn(
+    train_loss, batches_processed = train_fn(
         model,
         trainloader,
-        context.run_config["local-epochs"],
-        config["lr"],
-        device,
+        num_batches=num_batches,
+        lr=config["lr"],
+        device=device,
     )
 
     # Calculate final position

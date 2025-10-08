@@ -2,11 +2,18 @@ import torch
 from tqdm import tqdm
 
 
-def train(net, trainloader, epochs, lr, device):
-    """Train the model on the training set with progress tracking.
+def train(net, trainloader, num_batches, lr, device):
+    """Train the model on the training set for a fixed number of batches.
+
+    Args:
+        net: Neural network model
+        trainloader: DataLoader that yields batches (can be infinite)
+        num_batches: Number of batches to process
+        lr: Learning rate
+        device: Device to train on (CPU/GPU)
 
     Returns:
-        tuple: (avg_train_loss, batches_processed, epochs_completed)
+        tuple: (avg_train_loss, batches_processed)
     """
     net.to(device)  # move model to GPU if available
     criterion = torch.nn.CrossEntropyLoss().to(device)
@@ -15,30 +22,26 @@ def train(net, trainloader, epochs, lr, device):
 
     running_loss = 0.0
     batches_processed = 0
-    epochs_completed = 0
 
-    for epoch in range(epochs):
-        epoch_batches = 0
+    # Process exactly num_batches batches
+    for batch in tqdm(trainloader, desc=f"Training", total=num_batches):
+        images = batch["img"].to(device)
+        labels = batch["label"].to(device)
 
-        for batch in tqdm(trainloader, desc=f"Epoch {epoch + 1}/{epochs}"):
-            images = batch["img"].to(device)
-            labels = batch["label"].to(device)
+        optimizer.zero_grad()
+        loss = criterion(net(images), labels)
+        loss.backward()
+        optimizer.step()
 
-            optimizer.zero_grad()
-            loss = criterion(net(images), labels)
-            loss.backward()
-            optimizer.step()
+        running_loss += loss.item()
+        batches_processed += 1
 
-            running_loss += loss.item()
-            batches_processed += 1
-            epoch_batches += 1
-
-        # Only count epoch as completed if we processed at least one batch
-        if epoch_batches > 0:
-            epochs_completed += 1
+        # Stop after processing the desired number of batches
+        if batches_processed >= num_batches:
+            break
 
     avg_trainloss = running_loss / batches_processed if batches_processed > 0 else 0.0
-    return avg_trainloss, batches_processed, epochs_completed
+    return avg_trainloss, batches_processed
 
 
 def test(net, testloader, device):
