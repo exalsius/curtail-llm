@@ -25,8 +25,7 @@ class PilotAvg(Strategy):
 
     Parameters
     ----------
-    num_queues : int
-        Number of data queues to manage.
+    TODO missing keys
     weighted_by_key : str (default: "num-examples")
         The key within each MetricRecord whose value is used as the weight when
         computing weighted averages for both ArrayRecords and MetricRecords.
@@ -40,6 +39,7 @@ class PilotAvg(Strategy):
     def __init__(
         self,
         num_queues: int,
+        debug: bool,
         weighted_by_key: str = "num-examples",
         arrayrecord_key: str = "arrays",
         configrecord_key: str = "config",
@@ -47,6 +47,7 @@ class PilotAvg(Strategy):
         self.queue_manager = QueueManager(num_queues=num_queues)
         print(f"\n[Server] Initialized {self.queue_manager}")
 
+        self.debug = debug
         self.weighted_by_key = weighted_by_key
         self.arrayrecord_key = arrayrecord_key
         self.configrecord_key = configrecord_key
@@ -70,6 +71,8 @@ class PilotAvg(Strategy):
         print(f"\n[Round {server_round}] Assigning {len(assignments)} workers to queues")
         print(f"[Round {server_round}] Queue states: {self.queue_manager.queue_states}")
         config["assignments"] = assignments  # List of (queue_id, epoch, batch_idx)
+
+        config["debug"] = self.debug
 
         config["server-round"] = server_round
         record = RecordDict({self.arrayrecord_key: arrays, self.configrecord_key: config})
@@ -221,14 +224,17 @@ class OldPilotAvg(FedAvg):
 @app.main()
 def main(grid: Grid, context: Context) -> None:
     """Main entry point for the ServerApp."""
-
-    # Read run config
     num_rounds: int = context.run_config["num-server-rounds"]
     lr: float = context.run_config["learning-rate"]
     debug: bool = context.run_config["debug"]
     round_interval_seconds: float = context.run_config["round-interval-seconds"]
     num_queues: int = context.run_config["num-queues"]
     dataset_name: str = context.run_config["dataset-name"]
+
+    if debug:
+        print("[Server] Debug mode enabled...")
+        import pydevd_pycharm
+        pydevd_pycharm.settrace('localhost', port=5681, stdout_to_server=True, stderr_to_server=True)
 
     # Establish the anchor timestamp for round scheduling
     schedule_anchor_ts = time.time()
@@ -244,6 +250,7 @@ def main(grid: Grid, context: Context) -> None:
         schedule_anchor_ts=schedule_anchor_ts,
         dataset_name=dataset_name,
         num_queues=num_queues,
+        debug=debug,
     )
 
     # Start strategy, run FedAvg for `num_rounds`

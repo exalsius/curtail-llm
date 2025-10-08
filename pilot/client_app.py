@@ -12,14 +12,13 @@ app = ClientApp()
 @app.train()
 def train(msg: Message, context: Context):
     """Train the model on queue-assigned data."""
+    debug = context.run_config["debug"]
+    partition_id = context.node_config["partition-id"]  # Worker index (0, 1, 2...)
 
-    if context.run_config["debug"] and context.node_config["partition-id"] == 0:
+    if debug and partition_id == 0:
         print("[Client 0] Debug mode enabled...")
-        try:
-            import pydevd_pycharm
-            pydevd_pycharm.settrace('localhost', port=5679, stdout_to_server=True, stderr_to_server=True)
-        except ImportError:
-            print("[Client 0] pydevd_pycharm not available, skipping debug setup")
+        import pydevd_pycharm
+        pydevd_pycharm.settrace('localhost', port=5679, stdout_to_server=True, stderr_to_server=True)
 
     # Load the model and initialize it with the received weights
     model_type = context.run_config.get("model-type", "resnet18")
