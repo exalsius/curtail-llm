@@ -54,39 +54,69 @@ class NewStrategy(Strategy):
         log(INFO, "\t\t├── ArrayRecord key: '%s'", self.arrayrecord_key)
         log(INFO, "\t\t└── ConfigRecord key: '%s'", self.configrecord_key)
 
-    def _construct_messages(
-        self, record: RecordDict, node_ids: list[int], message_type: str
-    ) -> Iterable[Message]:
-        """Construct N Messages carrying the same RecordDict payload."""
-        messages = []
-        for node_id in node_ids:  # one message for each node
-            message = Message(
-                content=record,
-                message_type=message_type,
-                dst_node_id=node_id,
-            )
-            messages.append(message)
-        return messages
-
     def configure_train(
         self, server_round: int, arrays: ArrayRecord, config: ConfigRecord, grid: Grid
     ) -> Iterable[Message]:
         """Configure the next round of federated training."""
-        # Sample nodes
         node_ids = list(grid.get_node_ids())
-        log(
-            INFO,
-            "configure_train: Training on all %s nodes",
-            len(node_ids),
-        )
-        # Always inject current server round
+        log(INFO, "configure_train: Training on all %s nodes", len(node_ids))
+
         config["server-round"] = server_round
 
-        # Construct messages
-        record = RecordDict(
-            {self.arrayrecord_key: arrays, self.configrecord_key: config}
-        )
+        record = RecordDict({self.arrayrecord_key: arrays, self.configrecord_key: config})
         return self._construct_messages(record, node_ids, MessageType.TRAIN)
+
+    def aggregate_train(
+        self,
+        server_round: int,
+        replies: Iterable[Message],
+    ) -> tuple[Optional[ArrayRecord], Optional[MetricRecord]]:
+        """Aggregate ArrayRecords and MetricRecords in the received Messages."""
+        valid_replies, _ = self._check_and_log_replies(replies, is_train=True)
+        arrays, metrics = None, None
+        if valid_replies:
+            reply_contents = [msg.content for msg in valid_replies]
+            arrays = aggregate_arrayrecords(reply_contents, self.weighted_by_key)
+            metrics = aggregate_metricrecords(reply_contents, self.weighted_by_key)  # can be customized
+        return arrays, metrics
+
+    def configure_evaluate(
+        self, server_round: int, arrays: ArrayRecord, config: ConfigRecord, grid: Grid
+    ) -> Iterable[Message]:
+        """Configure the next round of federated evaluation."""
+        node_ids = list(grid.get_node_ids())
+        log(INFO, "configure_evaluate: Evaluating on all %s nodes", len(node_ids))
+
+        config["server-round"] = server_round
+
+        record = RecordDict({self.arrayrecord_key: arrays, self.configrecord_key: config})
+        return self._construct_messages(record, node_ids, MessageType.EVALUATE)
+
+    def aggregate_evaluate(
+        self,
+        server_round: int,
+        replies: Iterable[Message],
+    ) -> Optional[MetricRecord]:
+        """Aggregate MetricRecords in the received Messages."""
+        valid_replies, _ = self._check_and_log_replies(replies, is_train=False)
+        metrics = None
+        if valid_replies:
+            reply_contents = [msg.content for msg in valid_replies]
+            metrics = aggregate_metricrecords(reply_contents, self.weighted_by_key)  # can be customized
+        return metrics
+
+    def _build_deadline_iter(self, anchor: pd.Timestamp) -> Iterator[pd.Timestamp]:
+        next_boundary = anchor.floor(self._interval_delta) + self._interval_delta
+        while True:
+            yield next_boundary
+            next_boundary = next_boundary + self._interval_delta
+
+    def _construct_messages(
+        self, record: RecordDict, node_ids: list[int], message_type: str
+    ) -> Iterable[Message]:
+        """Construct N Messages carrying the same RecordDict payload."""
+        messages = [Message(content=record, message_type=message_type, dst_node_id=node_id) for node_id in node_ids]
+        return messages
 
     def _check_and_log_replies(
         self, replies: Iterable[Message], is_train: bool, validate: bool = True
@@ -122,22 +152,12 @@ class NewStrategy(Strategy):
             else:
                 valid_replies.append(msg)
 
-        log(
-            INFO,
-            "%s: Received %s results and %s failures",
-            "aggregate_train" if is_train else "aggregate_evaluate",
-            len(valid_replies),
-            len(error_replies),
-        )
+        log(INFO, "%s: Received %s results and %s failures",
+            "aggregate_train" if is_train else "aggregate_evaluate", len(valid_replies), len(error_replies))
 
         # Log errors
         for msg in error_replies:
-            log(
-                INFO,
-                "\t> Received error in reply from node %d: %s",
-                msg.metadata.src_node_id,
-                msg.error.reason,
-            )
+            log(INFO, "\t> Received error in reply from node %d: %s", msg.metadata.src_node_id, msg.error.reason)
 
         # Ensure expected ArrayRecords and MetricRecords are received
         if validate and valid_replies:
@@ -148,64 +168,6 @@ class NewStrategy(Strategy):
             )
 
         return valid_replies, error_replies
-
-    def aggregate_train(
-        self,
-        server_round: int,
-        replies: Iterable[Message],
-    ) -> tuple[Optional[ArrayRecord], Optional[MetricRecord]]:
-        """Aggregate ArrayRecords and MetricRecords in the received Messages."""
-        valid_replies, _ = self._check_and_log_replies(replies, is_train=True)
-
-        arrays, metrics = None, None
-        if valid_replies:
-            reply_contents = [msg.content for msg in valid_replies]
-
-            # Aggregate ArrayRecords
-            arrays = aggregate_arrayrecords(reply_contents, self.weighted_by_key)
-
-            # Aggregate MetricRecords (can be customized)
-            metrics = aggregate_metricrecords(reply_contents, self.weighted_by_key)
-        return arrays, metrics
-
-    def configure_evaluate(
-        self, server_round: int, arrays: ArrayRecord, config: ConfigRecord, grid: Grid
-    ) -> Iterable[Message]:
-        """Configure the next round of federated evaluation."""
-        # Sample nodes
-        node_ids = list(grid.get_node_ids())
-        log(
-            INFO,
-            "configure_evaluate: Evaluating on all %s nodes",
-            len(node_ids),
-        )
-
-        # Always inject current server round
-        config["server-round"] = server_round
-
-        # Construct messages
-        record = RecordDict(
-            {self.arrayrecord_key: arrays, self.configrecord_key: config}
-        )
-        return self._construct_messages(record, node_ids, MessageType.EVALUATE)
-
-    def aggregate_evaluate(
-        self,
-        server_round: int,
-        replies: Iterable[Message],
-    ) -> Optional[MetricRecord]:
-        """Aggregate MetricRecords in the received Messages."""
-        valid_replies, _ = self._check_and_log_replies(replies, is_train=False)
-
-        metrics = None
-        if valid_replies:
-            reply_contents = [msg.content for msg in valid_replies]
-
-            # Aggregate MetricRecords (can be customized)
-            metrics = aggregate_metricrecords(reply_contents, self.weighted_by_key)
-        return metrics
-
-
 
 
 class PilotAvg(FedAvg):
