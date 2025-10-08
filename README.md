@@ -27,6 +27,13 @@ git clone git@github.com:exalsius/pilot.git
 ```
 
 
+## Run Flower simulation
+
+```
+flwr run . local-simulation --stream
+```
+
+
 ## medAlpaca
 
 ```

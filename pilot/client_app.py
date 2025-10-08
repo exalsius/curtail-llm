@@ -1,6 +1,7 @@
 import torch
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
+from flwr.common import ConfigRecord
 
 from pilot.models import get_model
 from pilot.data import get_train_loader
@@ -27,21 +28,25 @@ def train(msg: Message, context: Context):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    # Extract queue assignment for this worker
-    queue_id, epoch, start_batch_idx = msg.content["config"]["assignments"][partition_id]
+    config: ConfigRecord = msg.content["config"]
+    dataset_name: str = config["dataset-name"]
+    queue_id: int = config["queue_id"]
+    num_queues: int = config["num-queues"]
+    queue_batch: int = config["queue_batch"]
+    queue_epoch: int = config["queue_epoch"]
 
     trainloader = get_train_loader(
-        dataset_name=msg.content["config"]["dataset-name"],
+        dataset_name=dataset_name,
         shard_id=queue_id,
-        num_shards=msg.content["config"]["num-queues"],
-        start_batch_idx=start_batch_idx,
-        epoch=epoch,
+        num_shards=num_queues,
+        start_batch_idx=queue_batch,
+        epoch=queue_epoch,
         batch_size=context.run_config["batch-size"],
     )
 
     # Print training information
-    print(f"[Worker {partition_id}] Assigned to Queue {queue_id}")
-    print(f"[Worker {partition_id}] Starting at epoch {epoch}, batch {start_batch_idx}")
+    print(f"[Worker {partition_id}] Assigned to Queue {queue_id} ({num_queues} queues)")
+    print(f"[Worker {partition_id}] Starting at epoch {queue_batch}, batch {queue_epoch}")
     print(f"[Worker {partition_id}] Device: {device}")
 
     # Call the training function with progress tracking
@@ -49,16 +54,17 @@ def train(msg: Message, context: Context):
         model,
         trainloader,
         context.run_config["local-epochs"],
-        msg.content["config"]["lr"],
+        config["lr"],
         device,
     )
 
     # Calculate final position
-    final_batch_idx = start_batch_idx + batches_processed
-    final_epoch = epoch + epochs_completed
+    # TODO the new_queue_batch calculation is not correct
+    new_queue_batch = queue_batch + batches_processed
+    new_queue_epoch = queue_epoch + epochs_completed
 
     print(f"[Worker {partition_id}] Completed: processed {batches_processed} batches")
-    print(f"[Worker {partition_id}] Final position: epoch {final_epoch}, batch {final_batch_idx}")
+    print(f"[Worker {partition_id}] New position: epoch {final_epoch}, batch {final_batch_idx}")
 
     # Construct and return reply Message with queue state
     model_record = ArrayRecord(model.state_dict())

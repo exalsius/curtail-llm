@@ -59,8 +59,8 @@ round-interval-seconds = 300
 dataset-name = "uoft-cs/cifar10"
 num-queues = 1
 model-type = "simple_cnn"
-# server_debug_port = 5681
-client_debug_port = 5681
+server_debug_port = 5681
+client_debug_port = 5682
 
 [tool.flwr.federations]
 default = "local-simulation"
