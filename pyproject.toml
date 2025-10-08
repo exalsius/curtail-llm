@@ -52,15 +52,15 @@ clientapp = "pilot.client_app:app"
 
 [tool.flwr.app.config]
 num-server-rounds = 10
-fraction-evaluate = 0.2
 local-epochs = 1
 learning-rate = 0.1
 batch-size = 32
-debug = false
 round-interval-seconds = 300
-num-queues = 1
 dataset-name = "uoft-cs/cifar10"
+num-queues = 1
 model-type = "simple_cnn"
+# server_debug_port = 5681
+client_debug_port = 5681
 
 [tool.flwr.federations]
 default = "local-simulation"

@@ -42,7 +42,7 @@ class PilotAvg(Strategy):
         self,
         dataset_name: str,
         num_queues: int,
-        debug: bool,
+        client_debug_port: bool,
         weighted_by_key: str = "num-examples",
         arrayrecord_key: str = "arrays",
         configrecord_key: str = "config",
@@ -50,7 +50,7 @@ class PilotAvg(Strategy):
         self.dataset_name = dataset_name
         self.num_queues = num_queues
         self.queue_manager = QueueManager(num_queues=num_queues)
-        self.debug = debug
+        self.client_debug_port = client_debug_port
         self.weighted_by_key = weighted_by_key
         self.arrayrecord_key = arrayrecord_key
         self.configrecord_key = configrecord_key
@@ -79,7 +79,7 @@ class PilotAvg(Strategy):
         config["server-round"] = server_round
         config["dataset-name"] = self.dataset_name
         config["num-queues"] = self.num_queues
-        config["debug"] = self.debug
+        config["client_debug_port"] = self.client_debug_port
 
         messages = []
         for node_id in node_ids:
@@ -230,15 +230,15 @@ def main(grid: Grid, context: Context) -> None:
     """Main entry point for the ServerApp."""
     num_rounds: int = context.run_config["num-server-rounds"]
     lr: float = context.run_config["learning-rate"]
-    debug: bool = context.run_config["debug"]
-    round_interval_seconds: float = context.run_config["round-interval-seconds"]
-    num_queues: int = context.run_config["num-queues"]
     dataset_name: str = context.run_config["dataset-name"]
+    num_queues: int = context.run_config["num-queues"]
+    # round_interval_seconds: float = context.run_config["round-interval-seconds"]
 
-    if debug:
+    server_debug_port: int = context.run_config["server_debug_port"]
+    if server_debug_port:
         print("[Server] Debug mode enabled...")
         import pydevd_pycharm
-        pydevd_pycharm.settrace('localhost', port=5681, stdout_to_server=True, stderr_to_server=True)
+        pydevd_pycharm.settrace('localhost', port=server_debug_port, stdout_to_server=True, stderr_to_server=True)
 
     # Establish the anchor timestamp for round scheduling
     # schedule_anchor_ts = time.time()
@@ -252,7 +252,7 @@ def main(grid: Grid, context: Context) -> None:
     strategy = PilotAvg(
         dataset_name=dataset_name,
         num_queues=num_queues,
-        debug=debug,
+        client_debug_port=context.run_config["client_debug_port"],
         # round_interval_seconds=round_interval_seconds,
         # schedule_anchor_ts=schedule_anchor_ts,
     )

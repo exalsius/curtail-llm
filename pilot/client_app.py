@@ -12,13 +12,13 @@ app = ClientApp()
 @app.train()
 def train(msg: Message, context: Context):
     """Train the model on queue-assigned data."""
-    debug = context.run_config["debug"]
     partition_id = context.node_config["partition-id"]  # Worker index (0, 1, 2...)
 
-    if debug and partition_id == 0:
+    client_debug_port = context.run_config["client_debug_port"]
+    if client_debug_port and partition_id == 0:
         print("[Client 0] Debug mode enabled...")
         import pydevd_pycharm
-        pydevd_pycharm.settrace('localhost', port=5681, stdout_to_server=True, stderr_to_server=True)
+        pydevd_pycharm.settrace('localhost', port=client_debug_port, stdout_to_server=True, stderr_to_server=True)
 
     # Load the model and initialize it with the received weights
     model_type = context.run_config["model-type"]
