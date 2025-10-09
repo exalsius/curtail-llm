@@ -51,14 +51,17 @@ serverapp = "pilot.server_app:app"
 clientapp = "pilot.client_app:app"
 
 [tool.flwr.app.config]
-num_server_rounds = 10
-local_batches = 100
-learning_rate = 0.1
-batch_size = 32
-# round_interval_seconds = 300
+model_type = "simple_cnn"
 dataset_name = "uoft-cs/cifar10"
 num_shards = 1
-model_type = "simple_cnn"
+num_rounds = 10
+local_batches = 100
+lr = 0.1
+batch_size = 32
+wandb_enabled = true
+wandb_project = "pilot"
+# wandb_entity = ""  # Optional wandb username / team name
+# round_interval_seconds = 300
 # server_debug_port = 5681
 # client_debug_port = 5682
 

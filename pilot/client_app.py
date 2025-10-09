@@ -1,6 +1,7 @@
 from logging import INFO
 
 import torch
+import wandb
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
 from flwr.common import ConfigRecord, log
@@ -35,6 +36,7 @@ def train(msg: Message, context: Context):
     shard_id: int = config["shard_id"]
     num_shards: int = config["num_shards"]
     processed_batches: int = config["processed_batches"]
+    server_round: int = config["server_round"]
     num_batches: int = 100  # TODO determine this via time
 
     trainloader = get_train_loader(
@@ -58,6 +60,32 @@ def train(msg: Message, context: Context):
         lr=config["lr"],
         device=device,
     )
+
+    # Handle wandb logging if enabled
+    wandb_run_id = config.get("wandb_run_id")
+    if wandb_run_id:
+        wandb_project: str = context.run_config["wandb_project"]
+        wandb_entity: str | None = context.run_config.get("wandb_entity")
+
+        # Join the same run as the server
+        wandb.init(
+            id=wandb_run_id,
+            resume="allow",
+            project=wandb_project,
+            entity=wandb_entity,
+        )
+
+        # Log client metrics
+        client_prefix = f"client_{partition_id}"
+        wandb.log({
+            f"{client_prefix}/train_loss": train_loss,
+            f"{client_prefix}/batches_processed": batches_processed,
+            f"{client_prefix}/shard_id": shard_id,
+            f"{client_prefix}/batch_range_start": processed_batches,
+            f"{client_prefix}/batch_range_end": processed_batches + batches_processed,
+            f"{client_prefix}/round": server_round,
+        })
+        wandb.finish()
 
     # Construct and return reply Message with shard state
     model_record = ArrayRecord(model.state_dict())

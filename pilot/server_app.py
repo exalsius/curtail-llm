@@ -4,6 +4,7 @@ from typing import Iterable, Optional
 
 import pandas as pd
 import torch
+import wandb
 from flwr.app import ArrayRecord, ConfigRecord, Context, MetricRecord, Message
 from flwr.common import log, RecordDict, MessageType
 from flwr.server.grid.grid import Grid
@@ -39,11 +40,13 @@ class PilotAvg(Strategy):
         dataset_name: str,
         num_shards: int,
         client_debug_port: bool,
+        wandb_run_id: str = None,
     ) -> None:
         self.dataset_name = dataset_name
         self.num_shards = num_shards
         self.shard_manager = ShardManager(num_shards=num_shards)
         self.client_debug_port = client_debug_port
+        self.wandb_run_id = wandb_run_id
         self.weighted_by_key = "batches_processed"
 
     def summary(self) -> None:
@@ -68,6 +71,8 @@ class PilotAvg(Strategy):
         config["num_shards"] = self.num_shards
         if self.client_debug_port:
             config["client_debug_port"] = self.client_debug_port
+        if self.wandb_run_id:
+            config["wandb_run_id"] = self.wandb_run_id
 
         messages = []
         for node_id in node_ids:
@@ -97,6 +102,18 @@ class PilotAvg(Strategy):
             reply_contents = [msg.content for msg in valid_replies]
             arrays = aggregate_arrayrecords(reply_contents, self.weighted_by_key)
             metrics = aggregate_metricrecords(reply_contents, self.weighted_by_key)  # can be customized
+
+            # Log to wandb if enabled
+            if wandb.run is not None and metrics:
+                wandb.log({
+                    "server/train_loss": metrics.get("train_loss", 0),
+                    "server/round": server_round,
+                    "server/num_clients": len(valid_replies),
+                })
+                # Log individual shard states
+                for shard_id, batches in enumerate(self.shard_manager.shard_states):
+                    wandb.log({f"server/shard_{shard_id}_batches": batches})
+
         return arrays, metrics
 
     def configure_evaluate(
@@ -209,10 +226,13 @@ class PilotAvg(Strategy):
 @app.main()
 def main(grid: Grid, context: Context) -> None:
     """Main entry point for the ServerApp."""
-    num_server_rounds: int = context.run_config["num_server_rounds"]
-    lr: float = context.run_config["learning_rate"]
+    num_rounds: int = context.run_config["num_rounds"]
+    lr: float = context.run_config["lr"]
     dataset_name: str = context.run_config["dataset_name"]
     num_shards: int = context.run_config["num_shards"]
+    local_batches: int = context.run_config["local_batches"]
+    batch_size: int = context.run_config["batch_size"]
+    model_type: str = context.run_config["model_type"]
     # round_interval_seconds: float = context.run_config["round_interval_seconds"]
 
     server_debug_port: int = context.run_config.get("server_debug_port", None)
@@ -221,11 +241,37 @@ def main(grid: Grid, context: Context) -> None:
         import pydevd_pycharm
         pydevd_pycharm.settrace('localhost', port=server_debug_port, stdout_to_server=True, stderr_to_server=True)
 
+    # Initialize wandb if enabled
+    wandb_enabled: bool = context.run_config.get("wandb_enabled", False)
+    wandb_run_id = None
+    if wandb_enabled:
+        wandb_project: str = context.run_config["wandb_project"]
+        wandb_entity: str | None = context.run_config.get("wandb_entity")
+
+        # Create run name with hyperparameters
+        run_name = f"lr{lr}_bs{batch_size}_shards{num_shards}_rounds{num_rounds}_batches{local_batches}"
+
+        wandb.init(
+            project=wandb_project,
+            entity=wandb_entity,
+            name=run_name,
+            config={
+                "learning_rate": lr,
+                "batch_size": batch_size,
+                "num_shards": num_shards,
+                "num_rounds": num_rounds,
+                "local_batches": local_batches,
+                "model_type": model_type,
+                "dataset_name": dataset_name,
+            }
+        )
+        wandb_run_id = wandb.run.id
+        log(INFO, "Wandb initialized with run_id: %s", wandb_run_id)
+
     # Establish the anchor timestamp for round scheduling
     # schedule_anchor_ts = time.time()
 
     # Load global model
-    model_type = context.run_config["model_type"]
     global_model = get_model(model_type)
     arrays = ArrayRecord(global_model.state_dict())
 
@@ -234,16 +280,17 @@ def main(grid: Grid, context: Context) -> None:
         dataset_name=dataset_name,
         num_shards=num_shards,
         client_debug_port=context.run_config.get("client_debug_port", None),
+        wandb_run_id=wandb_run_id,
         # round_interval_seconds=round_interval_seconds,
         # schedule_anchor_ts=schedule_anchor_ts,
     )
 
-    # Start strategy, run FedAvg for `num_server_rounds`
+    # Start strategy, run FedAvg for `num_rounds`
     result = strategy.start(
         grid=grid,
         initial_arrays=arrays,
         train_config=ConfigRecord(dict(lr=lr)),
-        num_rounds=num_server_rounds,
+        num_rounds=num_rounds,
         evaluate_fn=lambda round, arrays: global_evaluate(round, arrays, model_type, dataset_name),
     )
 
@@ -251,6 +298,11 @@ def main(grid: Grid, context: Context) -> None:
     print("\nSaving final model to disk...")
     state_dict = result.arrays.to_torch_state_dict()
     torch.save(state_dict, "final_model.pt")
+
+    # Finish wandb run
+    if wandb_enabled:
+        wandb.finish()
+        log(INFO, "Wandb run finished")
 
 
 def global_evaluate(server_round: int, arrays: ArrayRecord, model_type: str, dataset_name: str) -> MetricRecord:
@@ -267,6 +319,14 @@ def global_evaluate(server_round: int, arrays: ArrayRecord, model_type: str, dat
 
     # Evaluate the global model on the test set
     test_loss, test_acc = test(model, test_dataloader, device)
+
+    # Log to wandb if enabled
+    if wandb.run is not None:
+        wandb.log({
+            "server/eval_accuracy": test_acc,
+            "server/eval_loss": test_loss,
+            "server/round": server_round,
+        })
 
     # Return the evaluation metrics
     return MetricRecord({"accuracy": test_acc, "loss": test_loss})
