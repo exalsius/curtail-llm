@@ -5,8 +5,6 @@ from peft import PeftModel
 from transformers import GenerationConfig, LlamaForCausalLM, LlamaTokenizer, AutoModelForCausalLM, AutoTokenizer
 from .handler import DataHandler
 
-assert torch.cuda.is_available(), "No cuda device detected"
-
 
 class Inferer:
     """
@@ -35,35 +33,37 @@ class Inferer:
     """
         
     def __init__(
-        self, 
-        model_name: str, 
+        self,
+        model_name: str,
         prompt_template: str,
         base_model: str = None,
         model_max_length: int = 512,
-        load_in_8bit: bool = False, 
-        torch_dtype: torch.dtype = torch.float16, 
+        load_in_8bit: bool = False,
+        torch_dtype: torch.dtype = torch.float16,
         peft: bool = False
     ) -> None:
-        
-        if base_model and not peft: 
+
+        if base_model and not peft:
             raise ValueError(
-                "You have specified a base model, but `peft` is false", 
+                "You have specified a base model, but `peft` is false",
                 "This would load the base model only"
             )
-            
+
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
         self.model = self._load_model(
-            model_name = model_name, 
-            base_model = base_model or model_name, 
-            load_in_8bit = load_in_8bit, 
-            torch_dtype = torch_dtype, 
+            model_name = model_name,
+            base_model = base_model or model_name,
+            load_in_8bit = load_in_8bit,
+            torch_dtype = torch_dtype,
             peft = peft
         )
-        
+
         tokenizer = self._load_tokenizer(base_model or model_name)
-                
+
         self.data_handler = DataHandler(
             tokenizer,
-            prompt_template = prompt_template, 
+            prompt_template = prompt_template,
             model_max_length = model_max_length,
             train_on_inputs = False,
         )
@@ -151,9 +151,9 @@ class Inferer:
         prompt = self.data_handler.generate_prompt(instruction = instruction, input = input, output = output)
         if verbose:
             print(prompt)
-            
+
         input_tokens = self.data_handler.tokenizer(prompt, return_tensors="pt")
-        input_token_ids = input_tokens["input_ids"].to("cuda")
+        input_token_ids = input_tokens["input_ids"].to(self.device)
 
         generation_config = GenerationConfig(**generation_kwargs)
 
