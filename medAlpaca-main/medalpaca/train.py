@@ -24,12 +24,13 @@ from transformers import (
 
 
 def main(
-    model: str, # e.g. "decapoda-research/llama-7b-hf" "chavinlo/alpaca-native" "chavinlo/alpaca-13b"
-    val_set_size: Union[int, float] = 0.1,
+    model: str = "chavinlo/alpaca-native", # e.g. "decapoda-research/llama-7b-hf" "chavinlo/alpaca-native" "chavinlo/alpaca-13b"
+    val_set_size: Union[int, float] = 0.05,
     prompt_template: str = "medalpaca/prompt_templates/medalpaca.json",
     model_max_length: int = 256,  # should not exceed 2048, as LLaMA is trained with this
     train_on_inputs: bool = True,  # if False, masks out inputs in loss
-    data_path: str = "medical_meadow_small.json",
+    dataset_name: str = "medalpaca/medical_meadow_medical_flashcards",
+    dataset_split: str = "train",
     train_in_8bit: bool = False,
     use_lora: bool = True,
     lora_r: int = 8,
@@ -42,7 +43,7 @@ def main(
     global_batch_size: int = 128,
     output_dir: str = "./output",
     save_total_limit: int = 3,
-    eval_steps: int = 200,
+    eval_steps: int = 10,
     device_map: str = "auto",
     group_by_length: bool = False,
     wandb_run_name: str = "test",
@@ -50,8 +51,8 @@ def main(
     wandb_project: str = "medalpaca",
     optim: str = "adamw_torch",
     lr_scheduler_type: str = "cosine",
-    fp16: bool = True,
-    bf16: bool = False,
+    fp16: bool = False,
+    bf16: bool = True,
     gradient_checkpointing: bool = False,
     warmup_steps: int = 100,
     fsdp: str = "full_shard auto_wrap",
@@ -72,8 +73,10 @@ def main(
         The maximum length for model inputs. Default is 256.
     train_on_inputs (bool, optional):
         Whether to train on input tokens. Default is True.
-    data_path (str, optional):
-        The path to the dataset file. Default is "medical_meadow_small.json".
+    dataset_name (str, optional):
+        HuggingFace dataset name. Default is "medalpaca/medical_meadow_medical_flashcards".
+    dataset_split (str, optional):
+        Dataset split to use (e.g., "train", "train[:1000]"). Default is "train".
     train_in_8bit (bool, optional):
         Whether to use 8-bit training. Default is True.
     use_lora (bool, optional):
@@ -206,16 +209,21 @@ def main(
         model_max_length=model_max_length,
         train_on_inputs=train_on_inputs,
     )
-    data = load_dataset("json", data_files=data_path)
 
+    # Load dataset from HuggingFace
+    dataset = load_dataset(dataset_name, split=dataset_split)
+
+    # Create train/test split if validation set is requested
     if val_set_size > 0:
-        data = (
-            data["train"]
-            .train_test_split(test_size=val_set_size, shuffle=True, seed=42)
-            .map(data_handler.generate_and_tokenize_prompt)
-        )
+        split_dataset = dataset.train_test_split(test_size=val_set_size, shuffle=True, seed=42)
+        data = {
+            "train": split_dataset["train"].map(data_handler.generate_and_tokenize_prompt),
+            "test": split_dataset["test"].map(data_handler.generate_and_tokenize_prompt),
+        }
     else:
-        data = data.shuffle(seed=42).map(data_handler.generate_and_tokenize_prompt)
+        data = {
+            "train": dataset.shuffle(seed=42).map(data_handler.generate_and_tokenize_prompt),
+        }
 
     if not ddp and torch.cuda.device_count() > 1:
         # keeps Trainer from trying its own DataParallelism when more than 1 gpu is available
