@@ -40,13 +40,11 @@ class PilotAvg(Strategy):
         dataset_name: str,
         num_shards: int,
         client_debug_port: bool,
-        wandb_run_id: str = None,
     ) -> None:
         self.dataset_name = dataset_name
         self.num_shards = num_shards
         self.shard_manager = ShardManager(num_shards=num_shards)
         self.client_debug_port = client_debug_port
-        self.wandb_run_id = wandb_run_id
         self.weighted_by_key = "batches_processed"
 
     def summary(self) -> None:
@@ -71,8 +69,6 @@ class PilotAvg(Strategy):
         config["num_shards"] = self.num_shards
         if self.client_debug_port:
             config["client_debug_port"] = self.client_debug_port
-        if self.wandb_run_id:
-            config["wandb_run_id"] = self.wandb_run_id
 
         messages = []
         for node_id in node_ids:
@@ -104,15 +100,30 @@ class PilotAvg(Strategy):
             metrics = aggregate_metricrecords(reply_contents, self.weighted_by_key)  # can be customized
 
             # Log to wandb if enabled
-            if wandb.run is not None and metrics:
-                wandb.log({
-                    "server/train_loss": metrics.get("train_loss", 0),
-                    "server/round": server_round,
+            if wandb.run is not None:
+                log_dict = {
                     "server/num_clients": len(valid_replies),
-                })
-                # Log individual shard states
+                }
+
+                # Log aggregated server metrics
+                if metrics:
+                    log_dict["server/train_loss"] = metrics.get("train_loss", 0)
+
+                # Log individual client metrics
+                for reply in valid_replies:
+                    client_metrics: MetricRecord = reply.content["metrics"]
+                    client_prefix = f"client_{client_metrics['partition_id']}"
+                    log_dict.update({
+                        f"{client_prefix}/train_loss": client_metrics["train_loss"],
+                        f"{client_prefix}/shard_id": client_metrics["shard_id"],
+                        f"{client_prefix}/batches_processed": client_metrics["batches_processed"],
+                    })
+
+                # Add individual shard states
                 for shard_id, batches in enumerate(self.shard_manager.shard_states):
-                    wandb.log({f"server/shard_{shard_id}_batches": batches})
+                    log_dict[f"server/shard_{shard_id}_batches"] = batches
+
+                wandb.log(log_dict, step=server_round)
 
         return arrays, metrics
 
@@ -201,28 +212,6 @@ class PilotAvg(Strategy):
         return valid_replies, error_replies
 
 
-# class OldPilotAvg:
-#     """FedAvg with time-based scheduling and queue-based data management."""
-#
-#     def __init__(
-#         self,
-#         round_interval_seconds: float,
-#         schedule_anchor_ts: float,
-#     ) -> None:
-#         self.round_interval_seconds = round_interval_seconds
-#         self._interval_delta = pd.to_timedelta(round_interval_seconds, unit="s")
-#         anchor = pd.Timestamp.utcfromtimestamp(schedule_anchor_ts)
-#         self._deadline_iter: Iterator[pd.Timestamp] = self._build_deadline_iter(anchor)
-#
-#     def configure_train(
-#         self, server_round: int, arrays: ArrayRecord, config: ConfigRecord, grid: Grid
-#     ) -> Iterable[Message]:
-#         """Configure train round with queue assignments and timing metadata."""
-#         # Add round deadline
-#         config["round-deadline"] = next(self._deadline_iter).timestamp()
-
-
-
 @app.main()
 def main(grid: Grid, context: Context) -> None:
     """Main entry point for the ServerApp."""
@@ -243,7 +232,6 @@ def main(grid: Grid, context: Context) -> None:
 
     # Initialize wandb if enabled
     wandb_enabled: bool = context.run_config.get("wandb_enabled", False)
-    wandb_run_id = None
     if wandb_enabled:
         wandb_project: str = context.run_config["wandb_project"]
         wandb_entity: str | None = context.run_config.get("wandb_entity")
@@ -265,8 +253,7 @@ def main(grid: Grid, context: Context) -> None:
                 "dataset_name": dataset_name,
             }
         )
-        wandb_run_id = wandb.run.id
-        log(INFO, "Wandb initialized with run_id: %s", wandb_run_id)
+        log(INFO, "Wandb initialized with run_id: %s", wandb.run.id)
 
     # Establish the anchor timestamp for round scheduling
     # schedule_anchor_ts = time.time()
@@ -280,9 +267,6 @@ def main(grid: Grid, context: Context) -> None:
         dataset_name=dataset_name,
         num_shards=num_shards,
         client_debug_port=context.run_config.get("client_debug_port", None),
-        wandb_run_id=wandb_run_id,
-        # round_interval_seconds=round_interval_seconds,
-        # schedule_anchor_ts=schedule_anchor_ts,
     )
 
     # Start strategy, run FedAvg for `num_rounds`
@@ -325,8 +309,7 @@ def global_evaluate(server_round: int, arrays: ArrayRecord, model_type: str, dat
         wandb.log({
             "server/eval_accuracy": test_acc,
             "server/eval_loss": test_loss,
-            "server/round": server_round,
-        })
+        }, step=server_round)
 
     # Return the evaluation metrics
     return MetricRecord({"accuracy": test_acc, "loss": test_loss})

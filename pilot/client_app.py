@@ -1,7 +1,6 @@
 from logging import INFO
 
 import torch
-import wandb
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
 from flwr.common import ConfigRecord, log
@@ -16,11 +15,11 @@ app = ClientApp()
 @app.train()
 def train(msg: Message, context: Context):
     """Train the model on queue-assigned data."""
-    partition_id = context.node_config["partition-id"]  # Worker index (0, 1, 2...)
+    client_id = context.node_config["partition-id"]
     config: ConfigRecord = msg.content["config"]
 
     client_debug_port = config.get("client_debug_port", None)
-    if client_debug_port and partition_id == 0:
+    if client_debug_port and client_id == 0:
         print("[Client 0] Debug mode enabled...")
         import pydevd_pycharm
         pydevd_pycharm.settrace('localhost', port=client_debug_port, stdout_to_server=True, stderr_to_server=True)
@@ -48,9 +47,9 @@ def train(msg: Message, context: Context):
     )
 
     # Print training information
-    log(INFO, f"[Worker {partition_id}] Processing batch {processed_batches}-{processed_batches + num_batches} "
+    log(INFO, f"[Client {client_id}] Processing batch {processed_batches}-{processed_batches + num_batches} "
               f"of shard {shard_id} ({num_shards} shards)")
-    log(INFO, f"[Worker {partition_id}] Device: {device}")
+    log(INFO, f"[Client {client_id}] Device: {device}")
 
     # Call the training function with progress tracking
     train_loss, batches_processed = train_fn(
@@ -61,35 +60,10 @@ def train(msg: Message, context: Context):
         device=device,
     )
 
-    # Handle wandb logging if enabled
-    wandb_run_id = config.get("wandb_run_id")
-    if wandb_run_id:
-        wandb_project: str = context.run_config["wandb_project"]
-        wandb_entity: str | None = context.run_config.get("wandb_entity")
-
-        # Join the same run as the server
-        wandb.init(
-            id=wandb_run_id,
-            resume="allow",
-            project=wandb_project,
-            entity=wandb_entity,
-        )
-
-        # Log client metrics
-        client_prefix = f"client_{partition_id}"
-        wandb.log({
-            f"{client_prefix}/train_loss": train_loss,
-            f"{client_prefix}/batches_processed": batches_processed,
-            f"{client_prefix}/shard_id": shard_id,
-            f"{client_prefix}/batch_range_start": processed_batches,
-            f"{client_prefix}/batch_range_end": processed_batches + batches_processed,
-            f"{client_prefix}/round": server_round,
-        })
-        wandb.finish()
-
-    # Construct and return reply Message with shard state
+    # Construct and return reply Message with shard state and client metrics
     model_record = ArrayRecord(model.state_dict())
     metrics = {
+        "client_id": client_id,
         "train_loss": train_loss,
         "shard_id": shard_id,
         "batches_processed": batches_processed,
