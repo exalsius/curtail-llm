@@ -53,9 +53,9 @@ clientapp = "pilot.client_app:app"
 [tool.flwr.app.config]
 model_type = "simple_cnn"
 dataset_name = "uoft-cs/cifar10"
-num_shards = 1
-num_rounds = 10
-local_batches = 100
+num_shards = 3
+num_rounds = 100
+# local_batches = 100
 lr = 0.1
 batch_size = 32
 wandb_enabled = true
@@ -69,7 +69,7 @@ wandb_project = "pilot_flwr"
 default = "local-simulation"
 
 [tool.flwr.federations.local-simulation]
-options.num-supernodes = 1
+options.num-supernodes = 3
 
 [tool.flwr.federations.local-simulation-gpu]
 options.num-supernodes = 1

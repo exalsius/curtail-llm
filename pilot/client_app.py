@@ -1,3 +1,4 @@
+import random
 from logging import INFO
 
 import torch
@@ -36,7 +37,7 @@ def train(msg: Message, context: Context):
     num_shards: int = config["num_shards"]
     processed_batches: int = config["processed_batches"]
     server_round: int = config["server_round"]
-    num_batches: int = 100  # TODO determine this via time
+    num_batches: int = 80 + int(40 * random.random())  # TODO determine this via time
 
     trainloader = get_train_loader(
         dataset_name=dataset_name,

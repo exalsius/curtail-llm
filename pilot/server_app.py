@@ -53,7 +53,7 @@ class PilotAvg(Strategy):
         log(INFO, "\t└──> Shard: '%s'", self.shard_manager)
 
     def configure_train(
-        self, server_round: int, arrays: ArrayRecord, config: ConfigRecord, grid: Grid
+        self, server_round: int, arrays: ArrayRecord, base_config: ConfigRecord, grid: Grid
     ) -> Iterable[Message]:
         """Configure the next round of federated training."""
         node_ids = list(grid.get_node_ids())
@@ -61,18 +61,19 @@ class PilotAvg(Strategy):
 
         # Get worker assignments from shard manager
         assignments = self.shard_manager.assign_workers(node_ids)
-        print(f"\n[Round {server_round}] Assigning {len(assignments)} workers to shards")
-        print(f"[Round {server_round}] Shard states: {self.shard_manager.shard_states}")
+        log(INFO, f"\n[Round {server_round}] Assigning {len(assignments)} clients to shards")
+        log(INFO, f"[Round {server_round}] Shard states: {self.shard_manager.shard_states}")
 
-        config["server_round"] = server_round
-        config["dataset_name"] = self.dataset_name
-        config["num_shards"] = self.num_shards
+        base_config["server_round"] = server_round
+        base_config["dataset_name"] = self.dataset_name
+        base_config["num_shards"] = self.num_shards
         if self.client_debug_port:
-            config["client_debug_port"] = self.client_debug_port
+            base_config["client_debug_port"] = self.client_debug_port
 
         messages = []
         for node_id in node_ids:
-            config["shard_id"], config["processed_batches"] = assignments[node_id]
+            shard_id, processed_batches = assignments[node_id]
+            config = ConfigRecord({**base_config, "shard_id": shard_id, "processed_batches": processed_batches})
             record = RecordDict({"arrays": arrays, "config": config})
             message = Message(content=record, message_type=MessageType.TRAIN, dst_node_id=node_id)
             messages.append(message)
@@ -112,7 +113,7 @@ class PilotAvg(Strategy):
                 # Log individual client metrics
                 for reply in valid_replies:
                     client_metrics: MetricRecord = reply.content["metrics"]
-                    client_prefix = f"client_{client_metrics['partition_id']}"
+                    client_prefix = f"client_{client_metrics['client_id']}"
                     log_dict.update({
                         f"{client_prefix}/train_loss": client_metrics["train_loss"],
                         f"{client_prefix}/shard_id": client_metrics["shard_id"],
@@ -219,7 +220,7 @@ def main(grid: Grid, context: Context) -> None:
     lr: float = context.run_config["lr"]
     dataset_name: str = context.run_config["dataset_name"]
     num_shards: int = context.run_config["num_shards"]
-    local_batches: int = context.run_config["local_batches"]
+    # local_batches: int = context.run_config["local_batches"]
     batch_size: int = context.run_config["batch_size"]
     model_type: str = context.run_config["model_type"]
     # round_interval_seconds: float = context.run_config["round_interval_seconds"]
@@ -237,7 +238,7 @@ def main(grid: Grid, context: Context) -> None:
         wandb_entity: str | None = context.run_config.get("wandb_entity")
 
         # Create run name with hyperparameters
-        run_name = f"lr{lr}_bs{batch_size}_shards{num_shards}_rounds{num_rounds}_batches{local_batches}"
+        run_name = f"cl{num_shards},bs{batch_size},rounds{num_rounds}"
 
         wandb.init(
             project=wandb_project,
@@ -248,7 +249,7 @@ def main(grid: Grid, context: Context) -> None:
                 "batch_size": batch_size,
                 "num_shards": num_shards,
                 "num_rounds": num_rounds,
-                "local_batches": local_batches,
+            #     "local_batches": local_batches,
                 "model_type": model_type,
                 "dataset_name": dataset_name,
             }
