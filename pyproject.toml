@@ -53,7 +53,7 @@ clientapp = "pilot.client_app:app"
 [tool.flwr.app.config]
 model_type = "simple_cnn"
 dataset_name = "uoft-cs/cifar10"
-num_shards = 3
+num_shards = 5
 num_rounds = 100
 # local_batches = 100
 lr = 0.1

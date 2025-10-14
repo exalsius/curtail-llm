@@ -61,8 +61,9 @@ class PilotAvg(Strategy):
 
         # Get worker assignments from shard manager
         assignments = self.shard_manager.assign_workers(node_ids)
-        log(INFO, f"\n[Round {server_round}] Assigning {len(assignments)} clients to shards")
-        log(INFO, f"[Round {server_round}] Shard states: {self.shard_manager.shard_states}")
+        log(INFO, f"Shard states: {self.shard_manager.shard_states}")
+        for node_id, (shard_id, processed_batches) in assignments.items():
+            log(INFO, f"└──> Assigning client {node_id} to shard {shard_id} ({processed_batches} processed batches)")
 
         base_config["server_round"] = server_round
         base_config["dataset_name"] = self.dataset_name
@@ -238,7 +239,7 @@ def main(grid: Grid, context: Context) -> None:
         wandb_entity: str | None = context.run_config.get("wandb_entity")
 
         # Create run name with hyperparameters
-        run_name = f"cl{num_shards},bs{batch_size},rounds{num_rounds}"
+        run_name = f"sh{num_shards},bs{batch_size},rounds{num_rounds}"
 
         wandb.init(
             project=wandb_project,
