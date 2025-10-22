@@ -31,7 +31,6 @@ def train(msg: Message, context: Context):
     model_type = context.run_config["model_type"]
     model = get_model(model_type)
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
-    wandb.Run.watch(model)  # TODO temp
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
