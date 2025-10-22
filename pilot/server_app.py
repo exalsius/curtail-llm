@@ -24,15 +24,7 @@ app = ServerApp()
 
 
 class PilotAvg(Strategy):
-    """Custom Pilot Strategy based on FedAvg.
-
-    Parameters
-    ----------
-    TODO missing keys
-    weighted_by_key : str (default: "num-examples")
-        The key within each MetricRecord whose value is used as the weight when
-        computing weighted averages for both ArrayRecords and MetricRecords.
-    """
+    """Custom Pilot Strategy based on FedAvg."""
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     def __init__(
@@ -238,14 +230,18 @@ def main(grid: Grid, context: Context) -> None:
         wandb_project: str = context.run_config["wandb_project"]
         wandb_entity: str | None = context.run_config.get("wandb_entity")
 
+        # Get number of supernodes from grid
+        num_supernodes = len(list(grid.get_node_ids()))
+
         # Create run name with hyperparameters
-        run_name = f"sh{num_shards},bs{batch_size},rounds{num_rounds}"
+        run_name = f"nodes{num_supernodes},sh{num_shards},bs{batch_size},rounds{num_rounds}"
 
         wandb.init(
             project=wandb_project,
             entity=wandb_entity,
             name=run_name,
             config={
+                "num_supernodes": num_supernodes,
                 "learning_rate": lr,
                 "batch_size": batch_size,
                 "num_shards": num_shards,

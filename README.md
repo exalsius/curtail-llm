@@ -23,7 +23,7 @@ ssh-keygen -t ed25519 -C "philipp.wiesner@logsight.ai" -N ""
 eval "$(ssh-agent -s)"
 ssh-add ~/.ssh/id_ed25519
 cat ~/.ssh/id_ed25519.pub
-git clone git@github.com:exalsius/pilot.git
+git clone git@github.com:exalsius-dsv-collab/pilot.git
 ```
 
 
