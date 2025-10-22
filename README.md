@@ -19,10 +19,11 @@ pip install -e ".[dev,test]"
 apt update && apt install git -y
 git config --global user.name "Philipp Wiesner"
 git config --global user.email "philipp.wiesner@logsight.ai"
-ssh-keygen -t ed25519 -C "philipp.wiesner@logsight.ai" -N ""
+ssh-keygen -t ed25519 -C "philipp.wiesner@logsight.ai" -N "" -f ~/.ssh/id_ed25519
 eval "$(ssh-agent -s)"
 ssh-add ~/.ssh/id_ed25519
 cat ~/.ssh/id_ed25519.pub
+
 git clone git@github.com:exalsius-dsv-collab/pilot.git
 ```
 

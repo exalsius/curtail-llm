@@ -64,6 +64,7 @@ def train(msg: Message, context: Context):
         num_batches=num_batches,
         lr=config["lr"],
         device=device,
+        weight_decay=config.get("weight_decay", 0.01),
     )
 
     # Construct and return reply Message with client metrics

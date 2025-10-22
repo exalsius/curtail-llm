@@ -2,7 +2,7 @@ import torch
 from tqdm import tqdm
 
 
-def train(net, trainloader, num_batches, lr, device):
+def train(net, trainloader, num_batches, lr, device, weight_decay=0.01):
     """Train the model on the training set for a fixed number of batches.
 
     Args:
@@ -11,13 +11,19 @@ def train(net, trainloader, num_batches, lr, device):
         num_batches: Number of batches to process
         lr: Learning rate
         device: Device to train on (CPU/GPU)
+        weight_decay: Weight decay (L2 regularization) for AdamW optimizer
 
     Returns:
         tuple: (avg_train_loss, batches_processed)
     """
     net.to(device)  # move model to GPU if available
     criterion = torch.nn.CrossEntropyLoss().to(device)
-    optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9)
+    optimizer = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=weight_decay)
+
+    # Cosine annealing scheduler for this batch of training
+    # T_max is the number of batches in this training session
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_batches)
+
     net.train()
 
     running_loss = 0.0
@@ -32,6 +38,7 @@ def train(net, trainloader, num_batches, lr, device):
         loss = criterion(net(images), labels)
         loss.backward()
         optimizer.step()
+        scheduler.step()  # Update learning rate after each batch
 
         running_loss += loss.item()
         batches_processed += 1

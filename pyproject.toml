@@ -51,13 +51,14 @@ serverapp = "pilot.server_app:app"
 clientapp = "pilot.client_app:app"
 
 [tool.flwr.app.config]
-model_type = "efficientnet_v2"
+model_type = "efficientnet_b0"
 dataset_name = "uoft-cs/cifar10"
 num_shards = 5
 num_rounds = 100
 # local_batches = 100
-lr = 0.01  # Lower learning rate for EfficientNet V2
-batch_size = 32
+lr = 0.001
+weight_decay = 0.01
+batch_size = 128
 wandb_enabled = true
 wandb_project = "pilot_flwr"
 # wandb_entity = ""  # Optional wandb username / team name
@@ -69,11 +70,11 @@ wandb_project = "pilot_flwr"
 default = "local-simulation"
 
 [tool.flwr.federations.local-simulation]
-options.num-supernodes = 3
+options.num-supernodes = 1
 
 [tool.flwr.federations.local-simulation-gpu]
 options.num-supernodes = 1
-options.backend.client-resources.num-gpus = 0.3
+options.backend.client-resources.num-gpus = 1
 options.backend.client-resources.num-cpus = 2
 
 [tool.flwr.federations.local-deployment]
