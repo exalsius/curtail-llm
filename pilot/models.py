@@ -1,5 +1,6 @@
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision.models import efficientnet_v2_s, EfficientNet_V2_S_Weights
 
 
 class SimpleCNN(nn.Module):
@@ -27,9 +28,32 @@ class SimpleCNN(nn.Module):
         return x
 
 
+class EfficientNetV2(nn.Module):
+    """EfficientNet V2 model adapted for custom number of classes."""
+
+    def __init__(self, num_classes=10, pretrained=False):
+        super(EfficientNetV2, self).__init__()
+        # Load EfficientNet V2 Small variant
+        if pretrained:
+            weights = EfficientNet_V2_S_Weights.DEFAULT
+            self.model = efficientnet_v2_s(weights=weights)
+        else:
+            self.model = efficientnet_v2_s(weights=None)
+
+        # Replace the classifier head to match num_classes
+        # EfficientNet V2 S has 1280 features before the classifier
+        in_features = self.model.classifier[1].in_features
+        self.model.classifier[1] = nn.Linear(in_features, num_classes)
+
+    def forward(self, x):
+        return self.model(x)
+
+
 def get_model(model_type: str = "simple_cnn", **kwargs):
     """Factory function to get a model instance."""
     if model_type == "simple_cnn":
         return SimpleCNN(**kwargs)
+    elif model_type == "efficientnet_v2":
+        return EfficientNetV2(**kwargs)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
