@@ -74,6 +74,7 @@ options.num-supernodes = 3
 [tool.flwr.federations.local-simulation-gpu]
 options.num-supernodes = 1
 options.backend.client-resources.num-gpus = 0.3
+options.backend.client-resources.num-cpus = 2
 
 [tool.flwr.federations.local-deployment]
 address = "127.0.0.1:9093"
