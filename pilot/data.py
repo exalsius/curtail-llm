@@ -1,109 +1,55 @@
-"""Data loading utilities for federated learning with queue-based data management."""
+"""Data loading utilities for federated learning with epoch-based data management."""
 
+import itertools
+import torch
 from datasets import load_dataset
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import DataLoader, Subset
 from torchvision.transforms import Compose, Normalize, ToTensor
 
 
-class ShardManager:
-    """Manages multiple data shards, tracking progress through the dataset.
+class WorkerProgressTracker:
+    """Tracks per-worker progress through the dataset.
 
-    Note: Future improvement - assign workers expected to progress the most to shards
-    furthest behind. Currently we don't track expected progress per worker.
+    Each worker has a unique seed and progresses through epochs independently.
+    The shuffle seed for each epoch is: worker_seed + epoch
     """
 
-    def __init__(self, num_shards: int):
-        self.num_shards = num_shards
-        # Track number of batches processed for each shard
-        self.shard_states = [0 for _ in range(num_shards)]
+    def __init__(self, dataset_size: int, batch_size: int):
+        self.dataset_size = dataset_size
+        self.batch_size = batch_size
+        self.batches_per_epoch = (dataset_size + batch_size - 1) // batch_size
+        # Track state per worker: {node_id: {"seed": int, "epoch": int, "batch_within_epoch": int}}
+        self.worker_states = {}
+        self.next_seed = 0  # Auto-increment seed for new workers
 
-    def assign_workers(self, node_ids: list[int]):
-        """Assign workers to shards with least progress.
+    def get_or_create_worker_state(self, node_id: int) -> dict:
+        """Get worker state, creating new one if doesn't exist."""
+        if node_id not in self.worker_states:
+            self.worker_states[node_id] = {
+                "seed": self.next_seed,
+                "epoch": 0,
+                "batch_within_epoch": 0,
+            }
+            self.next_seed += 100  # Increment by 100 for next worker
+        return self.worker_states[node_id]
 
-        Returns:
-            Dict mapping node_id to (shard_id, processed_batches) tuples
-        """
-        # Fail if more workers than shards
-        if len(node_ids) > self.num_shards:
-            raise ValueError(f"Cannot assign {len(node_ids)} workers to {self.num_shards} shards.")
+    def update_worker_progress(self, node_id: int, batches_processed: int):
+        """Update worker's progress after processing batches."""
+        state = self.worker_states[node_id]
+        new_batch_position = state["batch_within_epoch"] + batches_processed
 
-        # Sort shards by progress (batches processed) to find those with least progress
-        shard_progress = [
-            (shard_id, processed_batches)
-            for shard_id, processed_batches in enumerate(self.shard_states)
-        ]
-        # Sort by processed_batches - shards with lower values have less progress
-        shard_progress.sort(key=lambda x: x[1])
+        # Calculate how many epochs were completed
+        epochs_completed = new_batch_position // self.batches_per_epoch
+        state["epoch"] += epochs_completed
+        state["batch_within_epoch"] = new_batch_position % self.batches_per_epoch
 
-        # Assign workers to the shards with least progress
-        assignments = {}
-        for i, node_id in enumerate(node_ids):
-            shard_id, processed_batches = shard_progress[i]
-            assignments[node_id] = (shard_id, processed_batches)
-
-        return assignments
-
-    def add(self, shard_id: int, processed_batches: int):
-        """Update the state of a shard after training."""
-        self.shard_states[shard_id] += processed_batches
+    def get_shuffle_seed(self, node_id: int) -> int:
+        """Get the current shuffle seed for a worker (seed + epoch)."""
+        state = self.worker_states[node_id]
+        return state["seed"] + state["epoch"]
 
     def __repr__(self):
-        return f"ShardManager(num_shards={self.num_shards}, states={self.shard_states})"
-
-
-class ShardedDataset(IterableDataset):
-    """Dataset that shards data and can resume from a specific batch index.
-
-    Yields batches continuously from the shard, wrapping around when reaching the end.
-    The current epoch is inferred from processed_batches for progress tracking.
-    The iterator yields samples infinitely - the consumer (train function) controls
-    how many batches to process.
-
-    Note: For streaming datasets, you must provide shard_size explicitly since
-    len(dataset) is not available. Currently only supports non-streaming datasets.
-    """
-
-    def __init__(self, dataset, shard_id, num_shards, processed_batches, batch_size, shard_size=None):
-        self.dataset = dataset
-        self.shard_id = shard_id
-        self.num_shards = num_shards
-        self.processed_batches = processed_batches
-        self.batch_size = batch_size
-
-        # Calculate this shard's slice of the dataset
-        if shard_size is None:
-            total_size = len(dataset)
-            shard_size = total_size // num_shards
-        self.start_idx = shard_id * shard_size
-        self.end_idx = self.start_idx + shard_size if shard_id < num_shards - 1 else self.start_idx + shard_size
-        self.shard_size = self.end_idx - self.start_idx
-
-        # Calculate batches per epoch for this shard
-        self.batches_per_shard_epoch = (self.shard_size + batch_size - 1) // batch_size  # ceil division
-
-        # Calculate current epoch and position within epoch (for tracking)
-        self.current_epoch = processed_batches // self.batches_per_shard_epoch
-        self.batch_in_epoch = processed_batches % self.batches_per_shard_epoch
-
-    def __iter__(self):
-        # Start from the current position within the shard
-        current_batch = self.batch_in_epoch
-
-        # Yield batches infinitely, wrapping around the shard
-        while True:
-            # Calculate sample range for current batch
-            sample_start = self.start_idx + (current_batch * self.batch_size)
-            sample_end = min(sample_start + self.batch_size, self.end_idx)
-
-            # Yield all samples in this batch
-            for idx in range(sample_start, sample_end):
-                yield self.dataset[idx]
-
-            # Move to next batch, wrapping around if needed
-            current_batch = (current_batch + 1) % self.batches_per_shard_epoch
-
-    def __len__(self):
-        return self.end_idx - self.start_idx
+        return f"WorkerProgressTracker(workers={len(self.worker_states)}, states={self.worker_states})"
 
 
 def apply_cifar10_transforms(batch):
@@ -118,59 +64,61 @@ def apply_cifar10_transforms(batch):
 
 def get_train_loader(
     dataset_name: str,
-    shard_id: int,
-    num_shards: int,
-    processed_batches: int,
+    worker_seed: int,
+    start_epoch: int,
+    start_batch: int,
     batch_size: int,
-    streaming: bool = False,
-    shard_size: int = None,
-    **kwargs  # Ignore extra kwargs
 ):
-    """Load a shard of the training dataset, resuming from a specific position.
+    """Get the training data loader for federated learning.
 
-    The loader provides batches continuously from the shard, wrapping around when
-    reaching the end. The train function controls how many batches to consume.
+    Returns an iterator that automatically wraps across epochs with new shuffling.
+    Each epoch uses shuffle seed = worker_seed + epoch for deterministic, unique data.
 
     Args:
         dataset_name: HuggingFace dataset name (e.g., "uoft-cs/cifar10")
-        shard_id: Which shard this loader belongs to (0 to num_shards-1)
-        num_shards: Total number of shards (can be more than workers)
-        processed_batches: Number of batches already processed on this shard
+        worker_seed: Unique seed for this worker (stays constant)
+        start_epoch: Which epoch to start from
+        start_batch: Which batch within the start epoch to begin at
         batch_size: Batch size for training
-        streaming: Whether to use streaming mode for large datasets
-        shard_size: Size of each shard (required for streaming datasets)
 
-    Returns:
-        DataLoader that yields batches infinitely from the assigned shard
+    Yields:
+        Batches continuously, wrapping to next epoch when current one completes
 
     Note:
-        - The current epoch is automatically inferred from processed_batches
-        - Workers continue on the same shard across epochs for better data locality
-        - The iterator wraps around the shard infinitely - caller controls batch count
-        - For streaming datasets, shard_size must be provided explicitly
+        - Each worker sees unique data due to unique worker_seed
+        - Different epochs = different shuffles (seed = worker_seed + epoch)
+        - Consumer controls how many batches to take
     """
-    # Load the full training dataset
-    dataset = load_dataset(dataset_name, split="train", streaming=streaming)
+    # Load the full training dataset once
+    dataset = load_dataset(dataset_name, split="train")
+    dataset = dataset.with_format("torch").with_transform(apply_cifar10_transforms)
+    dataset_size = len(dataset)
+    batches_per_epoch = (dataset_size + batch_size - 1) // batch_size
 
-    # Apply transforms
-    if not streaming:
-        dataset = dataset.with_format("torch").with_transform(apply_cifar10_transforms)
-    else:
-        # For streaming datasets, transforms are applied differently
-        dataset = dataset.with_format("torch")
-        # Note: May need to handle transforms in the dataset iterator for streaming
+    current_epoch = start_epoch
+    current_batch = start_batch
 
-    # Create sharded dataset that can resume from specific batch
-    sharded_dataset = ShardedDataset(
-        dataset=dataset,
-        shard_id=shard_id,
-        num_shards=num_shards,
-        processed_batches=processed_batches,
-        batch_size=batch_size,
-        shard_size=shard_size,
-    )
+    while True:
+        # Create shuffled dataset for current epoch
+        shuffle_seed = worker_seed + current_epoch
+        generator = torch.Generator().manual_seed(shuffle_seed)
+        indices = torch.randperm(dataset_size, generator=generator).tolist()
+        shuffled_dataset = Subset(dataset, indices)
+        loader = DataLoader(shuffled_dataset, batch_size=batch_size, shuffle=False)
 
-    return DataLoader(sharded_dataset, batch_size=batch_size, shuffle=False)
+        # Skip to current batch if resuming mid-epoch
+        iterator = iter(loader)
+        if current_batch > 0:
+            for _ in itertools.islice(iterator, current_batch):
+                pass
+
+        # Yield batches from this epoch
+        for batch in iterator:
+            yield batch
+
+        # Epoch complete, move to next
+        current_epoch += 1
+        current_batch = 0
 
 
 def get_test_loader(dataset_name: str, batch_size: int):
