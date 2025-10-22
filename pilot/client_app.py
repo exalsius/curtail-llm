@@ -2,6 +2,7 @@ import random
 from logging import INFO
 
 import torch
+import wandb
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
 from flwr.common import ConfigRecord, log
@@ -29,6 +30,7 @@ def train(msg: Message, context: Context):
     model_type = context.run_config["model_type"]
     model = get_model(model_type)
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
+    wandb.Run.watch(model)  # TODO temp
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
