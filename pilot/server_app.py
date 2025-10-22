@@ -115,7 +115,7 @@ class PilotAvg(Strategy):
 
                 # Add individual shard states
                 for shard_id, batches in enumerate(self.shard_manager.shard_states):
-                    log_dict[f"server/shard_{shard_id}_batches"] = batches
+                    log_dict[f"data/shard_{shard_id}_batches"] = batches
 
                 wandb.log(log_dict, step=server_round)
 
