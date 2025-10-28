@@ -120,10 +120,10 @@ def get_train_loader(dataset_name, shard_id, num_shards, processed_batches,
     """Get training dataloader for LLM dataset with tokenization."""
     from datasets import load_dataset
 
-    # LLM datasets always use streaming
-    use_streaming = dataset_name in DATASET_SIZES
+    # Use map-style datasets (Arrow, memory-mapped). No streaming.
+    use_streaming = False
 
-    # Load dataset
+    # Load dataset (map-style)
     dataset = load_dataset(dataset_name, split="train", streaming=use_streaming)
 
     # Create sharded dataset
@@ -133,7 +133,7 @@ def get_train_loader(dataset_name, shard_id, num_shards, processed_batches,
         num_shards=num_shards,
         processed_batches=processed_batches,
         batch_size=batch_size,
-        dataset_name=dataset_name if use_streaming else None,
+        dataset_name=None,
         streaming=use_streaming,
     )
 

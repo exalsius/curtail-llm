@@ -50,16 +50,32 @@ class ShardManager:
 
 
 class ShardedDataset(IterableDataset):
-    """Unified dataset that handles both indexed and streaming datasets with sharding."""
+    """Unified dataset that handles both indexed and streaming datasets with sharding.
+
+    For streaming datasets, applies a pre-shuffle before sharding and varies the
+    shuffle seed effectively per shard-epoch to provide different samples across
+    epochs while maintaining even coverage over time.
+    """
 
     def __init__(self, dataset, shard_id, num_shards, processed_batches, batch_size,
-                 dataset_name=None, streaming=False):
+                 dataset_name=None, streaming=False, shuffle_seed: int = 0, shuffle_buffer_size: int | None = None):
         self.dataset = dataset
         self.shard_id = shard_id
         self.num_shards = num_shards
         self.processed_batches = processed_batches
         self.batch_size = batch_size
         self.streaming = streaming
+        self.dataset_name = dataset_name
+        self.shuffle_seed = shuffle_seed
+
+        # Default shuffle buffer sizing for streaming datasets (trade off RAM vs. decorrelation)
+        if shuffle_buffer_size is None and streaming:
+            # Heuristic defaults: larger buffers for very large datasets
+            if dataset_name and "imagenet" in dataset_name.lower():
+                shuffle_buffer_size = 100_000
+            else:
+                shuffle_buffer_size = 50_000
+        self.shuffle_buffer_size = shuffle_buffer_size
 
         # Calculate shard size
         if streaming:
@@ -89,25 +105,64 @@ class ShardedDataset(IterableDataset):
             yield from self._iter_indexed()
 
     def _iter_indexed(self):
-        """Iterator for indexed datasets (CIFAR-10)."""
-        current_batch = self.batch_in_epoch
+        """Iterator for map-style datasets (e.g., CIFAR-10, UltraChat).
 
-        while True:
-            sample_start = self.start_idx + (current_batch * self.batch_size)
-            sample_end = min(sample_start + self.batch_size, self.end_idx)
-
-            for idx in range(sample_start, sample_end):
-                yield self.dataset[idx]
-
-            current_batch = (current_batch + 1) % self.batches_per_shard_epoch
-
-    def _iter_streaming(self):
-        """Iterator for streaming datasets (ImageNet-1k, UltraChat)."""
-        sharded_dataset = self.dataset.shard(num_shards=self.num_shards, index=self.shard_id)
+        Performs pre-shuffle before sharding for each shard-epoch using a
+        deterministic seed schedule. Resumes within-epoch by skipping
+        already-consumed samples, then reshuffles and continues next epoch.
+        """
+        current_epoch = self.current_epoch
         samples_to_skip = self.batch_in_epoch * self.batch_size
 
         while True:
-            iterator = iter(sharded_dataset)
+            # Pre-shuffle globally, then shard interleaved for balance
+            ds = self.dataset.shuffle(seed=self.shuffle_seed + current_epoch)
+            ds = ds.shard(num_shards=self.num_shards, index=self.shard_id, contiguous=False, drop_last=True)
+
+            # Determine how many samples to serve this epoch for this shard
+            epoch_shard_len = len(ds)
+            take_count = min(self.shard_size, epoch_shard_len)
+
+            # Resume inside the epoch if needed
+            start = min(samples_to_skip, take_count)
+            if start:
+                samples_to_skip = 0
+
+            for i in range(start, take_count):
+                yield ds[i]
+
+            # Next shard-epoch
+            current_epoch += 1
+
+    def _iter_streaming(self):
+        """Iterator for streaming datasets (ImageNet-1k, UltraChat).
+
+        Applies pre-shuffle then sharding. On each shard-epoch rollover, varies the
+        effective shuffle seed (via epoch or seed offset) to reshuffle before
+        re-iterating, producing different samples per epoch while keeping shard
+        sizes and load balanced.
+        """
+        if self.dataset_name is None:
+            raise ValueError("dataset_name required for streaming datasets")
+
+        samples_to_skip = self.batch_in_epoch * self.batch_size
+        current_epoch = self.current_epoch
+
+        while True:
+            # Pre-shuffle, then shard. Use a stable base seed and vary with epoch
+            # to avoid accumulating transforms and to ensure reproducibility.
+            ds = self.dataset.shuffle(seed=self.shuffle_seed + current_epoch,
+                                      buffer_size=self.shuffle_buffer_size)
+            ds = ds.shard(num_shards=self.num_shards, index=self.shard_id)
+
+            # Inform HF IterableDataset of the epoch for deterministic reshuffle/shard
+            try:
+                ds.set_epoch(current_epoch)
+            except AttributeError:
+                # Older datasets versions may not support set_epoch; safe to ignore
+                pass
+
+            iterator = iter(ds)
 
             if samples_to_skip > 0:
                 iterator = itertools.islice(iterator, samples_to_skip, None)
@@ -117,9 +172,11 @@ class ShardedDataset(IterableDataset):
             for sample in iterator:
                 yield sample
                 sample_count += 1
-
                 if sample_count >= self.shard_size:
                     break
+
+            # Advance to next shard-epoch and reshuffle before next pass
+            current_epoch += 1
 
     def __len__(self):
         return self.shard_size
