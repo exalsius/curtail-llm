@@ -30,8 +30,37 @@ git clone git@github.com:exalsius-dsv-collab/pilot.git
 
 ## Run Flower simulation
 
-```
+### Single Run
+```bash
+# Run with default configuration
 flwr run . local-simulation --stream
+
+# Run with custom parameters
+flwr run . --run-config "num_rounds=50 lr=0.05 batch_size=64" --stream
+
+# Run with GPU support
+flwr run . local-simulation-gpu --stream
+```
+
+### Parameter Sweeps
+
+Run multiple experiments with different numbers of supernodes:
+
+```bash
+python run_sweep.py
+```
+
+The script uses Flower's programmatic API to run simulations with different `num-supernodes` values.
+Customize parameters at the top of the script:
+
+```python
+NUM_SUPERNODES = [2, 3, 5, 10]  # Supernodes to test
+RUN_CONFIG = {
+    "lr": 0.1,
+    "batch_size": 32,
+    "num_rounds": 100,
+    # ... other parameters
+}
 ```
 
 

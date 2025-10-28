@@ -9,14 +9,6 @@ import pilot.llm as llm
 
 app = ClientApp()
 
-# Known vision model types
-VISION_MODELS = {"simple_cnn", "efficientnet_b0"}
-
-
-def get_task_type(model_type: str) -> str:
-    """Determine task type from model name."""
-    return "vision" if model_type in VISION_MODELS else "llm"
-
 
 @app.train()
 def train(msg: Message, context: Context):
@@ -31,7 +23,7 @@ def train(msg: Message, context: Context):
         pydevd_pycharm.settrace('localhost', port=client_debug_port, stdout_to_server=True, stderr_to_server=True)
 
     model_type = context.run_config["model_type"]
-    task_type = context.run_config.get("task_type") or get_task_type(model_type)
+    task_type = context.run_config["task_type"]
 
     log(INFO, f"[Client {client_id}] Task: {task_type}, Model: {model_type}")
     log(INFO, f"[Client {client_id}] Shard {config['shard_id']}/{config['num_shards']}, "

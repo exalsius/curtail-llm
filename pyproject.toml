@@ -50,45 +50,44 @@ publisher = "flwrlabs"
 serverapp = "pilot.server_app:app"
 clientapp = "pilot.client_app:app"
 
-# ===== Vision Task (Image Classification) =====
 [tool.flwr.app.config]
-model_type = "efficientnet_b0"
-dataset_name = "uoft-cs/cifar10"
-num_shards = 5
-num_rounds = 100
-lr = 0.001
-weight_decay = 0.01
-batch_size = 128
 wandb_enabled = true
 wandb_project = "pilot_flwr"
 # wandb_entity = ""  # Optional wandb username / team name
 # server_debug_port = 5681
 # client_debug_port = 5682
 
+# ===== Vision Task (Image Classification) =====
+#task_type = "vision"
+#model_type = "efficientnet_b0"
+#dataset_name = "uoft-cs/cifar10"
+#num_shards = 5
+#num_rounds = 100
+#lr = 0.001
+#weight_decay = 0.01
+#batch_size = 128
+
 # ===== LLM Task (Text Generation with LoRA) =====
-# Uncomment to switch to LLM training
-# [tool.flwr.app.config]
-# task_type = "llm"  # Optional - auto-detected from model_type
-# model_type = "Qwen/Qwen2.5-7B"
-# dataset_name = "HuggingFaceH4/ultrachat_200k"
-# num_shards = 100  # Large dataset needs more shards
-# num_rounds = 50
-# lr = 0.0001  # Lower LR for LLMs
-# weight_decay = 0.01
-# batch_size = 4  # Smaller batch for LLMs
-# max_length = 512  # Max sequence length
-# gradient_accumulation_steps = 4  # Effective batch = 4 * 4 = 16
-# wandb_enabled = true
-# wandb_project = "pilot_flwr_llm"
+task_type = "llm"  # Optional - auto-detected from model_type
+model_type = "Qwen/Qwen2.5-7B"
+dataset_name = "HuggingFaceH4/ultrachat_200k"
+num_shards = 1
+num_rounds = 50
+lr = 0.0001  # Lower LR for LLMs
+weight_decay = 0.01
+batch_size = 4  # Smaller batch for LLMs
+max_length = 512  # Max sequence length
+gradient_accumulation_steps = 4  # Effective batch = 4 * 4 = 16
+
 
 [tool.flwr.federations]
 default = "local-simulation"
 
 [tool.flwr.federations.local-simulation]
-options.num-supernodes = 1
+options.num-supernodes = 3
 
 [tool.flwr.federations.local-simulation-gpu]
-options.num-supernodes = 1
+options.num-supernodes = 3
 options.backend.client-resources.num-gpus = 1
 options.backend.client-resources.num-cpus = 2
 
