@@ -110,16 +110,29 @@ class PilotAvg(Strategy):
                 # Log aggregated server metrics
                 if metrics:
                     log_dict["server/train_loss"] = metrics.get("train_loss", 0)
+                    if "train_ppl" in metrics:
+                        log_dict["server/train_ppl"] = metrics.get("train_ppl", 0)
+                    if "val_loss" in metrics:
+                        log_dict["server/val_loss"] = metrics.get("val_loss", 0)
+                    if "val_ppl" in metrics:
+                        log_dict["server/val_ppl"] = metrics.get("val_ppl", 0)
 
                 # Log individual client metrics
                 for reply in valid_replies:
                     client_metrics: MetricRecord = reply.content["metrics"]
                     client_prefix = f"client_{client_metrics['client_id']}"
-                    log_dict.update({
-                        f"{client_prefix}/train_loss": client_metrics["train_loss"],
-                        f"{client_prefix}/shard_id": client_metrics["shard_id"],
-                        f"{client_prefix}/batches_processed": client_metrics["batches_processed"],
-                    })
+                    # Always present
+                    log_dict[f"{client_prefix}/shard_id"] = client_metrics["shard_id"]
+                    log_dict[f"{client_prefix}/batches_processed"] = client_metrics["batches_processed"]
+                    # Optional metrics, add if available
+                    if "train_loss" in client_metrics:
+                        log_dict[f"{client_prefix}/train_loss"] = client_metrics["train_loss"]
+                    if "train_ppl" in client_metrics:
+                        log_dict[f"{client_prefix}/train_ppl"] = client_metrics["train_ppl"]
+                    if "val_loss" in client_metrics:
+                        log_dict[f"{client_prefix}/val_loss"] = client_metrics["val_loss"]
+                    if "val_ppl" in client_metrics:
+                        log_dict[f"{client_prefix}/val_ppl"] = client_metrics["val_ppl"]
 
                 # Add individual shard states
                 for shard_id, batches in enumerate(self.shard_manager.shard_states):

@@ -31,8 +31,10 @@ def train(msg: Message, context: Context):
 
     if task_type == "vision":
         state_dict, train_loss, batches_processed = vision.train_client(msg, config, context)
+        metrics_payload = {"train_loss": train_loss}
     elif task_type == "llm":
-        state_dict, train_loss, batches_processed = llm.train_client(msg, config, context)
+        # LLM returns a metrics dict for richer reporting
+        state_dict, metrics_payload, batches_processed = llm.train_client(msg, config, context)
     else:
         raise ValueError(f"Unknown task type: {task_type}")
 
@@ -41,9 +43,9 @@ def train(msg: Message, context: Context):
             "arrays": ArrayRecord(state_dict),
             "metrics": MetricRecord({
                 "client_id": client_id,
-                "train_loss": train_loss,
                 "shard_id": config["shard_id"],
                 "batches_processed": batches_processed,
+                **metrics_payload,
             }),
         }),
         reply_to=msg,

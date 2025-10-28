@@ -1,13 +1,15 @@
 """LLM models, data loading, and training with LoRA fine-tuning."""
 
 import itertools
+import random
+
 import torch
 from torch.utils.data import DataLoader
 from peft import LoraConfig, get_peft_model, TaskType
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
 
-from pilot.data import ShardedDataset, DATASET_SIZES
+from pilot.data import ShardedDataset
 
 
 # ============================================================================
@@ -94,16 +96,19 @@ class TokenizedDataLoader:
     def _extract_texts(self, batch):
         """Extract text from various dataset formats."""
         if "messages" in batch:
-            # Chat format
-            return [self._format_chat(msgs) for msgs in batch["messages"]]
-        elif "instruction" in batch and "output" in batch:
-            # Alpaca format
-            return [f"Instruction: {inst}\n\nResponse: {out}"
-                    for inst, out in zip(batch["instruction"], batch["output"])]
-        elif "text" in batch:
-            return batch["text"]
-        else:
-            raise ValueError(f"Unknown dataset format: {batch.keys()}")
+            # UltraChat format: always use chat template from the tokenizer
+            if not hasattr(self.tokenizer, "apply_chat_template"):
+                raise ValueError("Tokenizer must support apply_chat_template for UltraChat datasets")
+            msgs_list = batch["messages"]
+            return [
+                self.tokenizer.apply_chat_template(
+                    msgs,
+                    tokenize=False,
+                    add_generation_prompt=False,
+                )
+                for msgs in msgs_list
+            ]
+        raise ValueError("Unsupported dataset sample format for UltraChat — expected 'messages' key")
 
     def _format_chat(self, messages):
         """Format chat messages into single string."""
@@ -115,6 +120,13 @@ class TokenizedDataLoader:
         return "\n\n".join(formatted)
 
 
+def _ultrachat_splits(dataset_name: str) -> tuple[str, str]:
+    """Return the exact splits for UltraChat SFT. Raise for other datasets."""
+    if dataset_name != "HuggingFaceH4/ultrachat_200k":
+        raise ValueError("This codepath is specialized for HuggingFaceH4/ultrachat_200k only")
+    return "train_sft", "test_sft"
+
+
 def get_train_loader(dataset_name, shard_id, num_shards, processed_batches,
                      batch_size, model_type, max_length=512):
     """Get training dataloader for LLM dataset with tokenization."""
@@ -123,8 +135,9 @@ def get_train_loader(dataset_name, shard_id, num_shards, processed_batches,
     # Use map-style datasets (Arrow, memory-mapped). No streaming.
     use_streaming = False
 
-    # Load dataset (map-style)
-    dataset = load_dataset(dataset_name, split="train", streaming=use_streaming)
+    # Load dataset (map-style) with UltraChat SFT split
+    train_split, _ = _ultrachat_splits(dataset_name)
+    dataset = load_dataset(dataset_name, split=train_split, streaming=use_streaming)
 
     # Create sharded dataset
     sharded_dataset = ShardedDataset(
@@ -145,6 +158,26 @@ def get_train_loader(dataset_name, shard_id, num_shards, processed_batches,
         tokenizer.pad_token = tokenizer.eos_token
 
     # Wrap with tokenization
+    return TokenizedDataLoader(raw_loader, tokenizer, max_length)
+
+
+def get_eval_loader(dataset_name, batch_size, model_type, max_length=512):
+    """Get evaluation dataloader (non-sharded) for LLM dataset with tokenization."""
+    from datasets import load_dataset
+
+    # Map-style datasets
+    use_streaming = False
+
+    _, eval_split = _ultrachat_splits(dataset_name)
+    dataset = load_dataset(dataset_name, split=eval_split, streaming=use_streaming)
+
+    # Wrap as a simple PyTorch DataLoader
+    raw_loader = DataLoader(dataset, batch_size=batch_size)
+
+    tokenizer = AutoTokenizer.from_pretrained(model_type)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
     return TokenizedDataLoader(raw_loader, tokenizer, max_length)
 
 
@@ -188,6 +221,26 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
     return avg_loss, batches_processed
 
 
+@torch.no_grad()
+def evaluate(model, evalloader, num_batches, device):
+    """Evaluate model on a capped number of eval batches and return average loss."""
+    model.eval()
+    total_loss = 0.0
+    batches = 0
+    for batch_idx, batch in enumerate(tqdm(evalloader, total=num_batches, desc="Evaluating")):
+        if batches >= num_batches:
+            break
+
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+        labels = batch["labels"].to(device)
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+        total_loss += outputs.loss.item()
+        batches += 1
+
+    return (total_loss / batches) if batches > 0 else 0.0
+
+
 # ============================================================================
 # Federated Learning Client Handler
 # ============================================================================
@@ -211,23 +264,16 @@ def train_client(msg, config, context):
     lora_config = context.run_config.get("lora_config", None)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    # Determine number of batches
-    import random
-    num_batches = 80 + int(40 * random.random())
+    if dataset_name != "HuggingFaceH4/ultrachat_200k":
+        raise ValueError("LLM train_client is specialized for HuggingFaceH4/ultrachat_200k")
 
-    # Load base model
+    num_batches = 1000 - 200 + int(400 * random.random())
+
     base_model = get_model(model_type)
-
-    # Apply LoRA
     model = apply_lora(base_model, lora_config)
-
-    # Load weights if provided
-    if msg.content["arrays"] is not None:
-        model.load_state_dict(msg.content["arrays"].to_torch_state_dict(), strict=False)
-
+    model.load_state_dict(msg.content["arrays"].to_torch_state_dict(), strict=False)
     model.to(device)
 
-    # Get data
     trainloader = get_train_loader(
         dataset_name=dataset_name,
         shard_id=shard_id,
@@ -238,7 +284,6 @@ def train_client(msg, config, context):
         max_length=max_length,
     )
 
-    # Train
     train_loss, batches_processed = train(
         model=model,
         trainloader=trainloader,
@@ -249,4 +294,21 @@ def train_client(msg, config, context):
         gradient_accumulation_steps=gradient_accumulation_steps,
     )
 
-    return model.state_dict(), train_loss, batches_processed
+    # Compute perplexity from training loss
+    train_ppl = float(torch.exp(torch.tensor(train_loss)).item()) if train_loss > 0 else float("inf")
+
+    # Quick eval for progress tracking on UltraChat test_sft
+    evalloader = get_eval_loader(
+        dataset_name=dataset_name,
+        batch_size=batch_size,
+        model_type=model_type,
+        max_length=max_length,
+    )
+    # Cap eval to a moderate number of batches
+    eval_batches = min(200, num_batches)
+    val_loss = evaluate(model, evalloader, num_batches=eval_batches, device=device)
+    val_ppl = float(torch.exp(torch.tensor(val_loss)).item()) if val_loss > 0 else float("inf")
+
+    train_metrics = {"train_loss": train_loss, "train_ppl": train_ppl, "val_loss": val_loss, "val_ppl": val_ppl}
+
+    return model.state_dict(), train_metrics, batches_processed
