@@ -117,7 +117,8 @@ class ShardedDataset(IterableDataset):
         while True:
             # Pre-shuffle globally, then shard interleaved for balance
             ds = self.dataset.shuffle(seed=self.shuffle_seed + current_epoch)
-            ds = ds.shard(num_shards=self.num_shards, index=self.shard_id, contiguous=False, drop_last=True)
+            # Interleaved sharding for balance across shards
+            ds = ds.shard(num_shards=self.num_shards, index=self.shard_id, contiguous=False)
 
             # Determine how many samples to serve this epoch for this shard
             epoch_shard_len = len(ds)
