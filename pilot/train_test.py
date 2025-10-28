@@ -20,10 +20,6 @@ def train(net, trainloader, num_batches, lr, device, weight_decay=0.01):
     criterion = torch.nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=weight_decay)
 
-    # Cosine annealing scheduler for this batch of training
-    # T_max is the number of batches in this training session
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_batches)
-
     net.train()
 
     running_loss = 0.0
@@ -38,7 +34,6 @@ def train(net, trainloader, num_batches, lr, device, weight_decay=0.01):
         loss = criterion(net(images), labels)
         loss.backward()
         optimizer.step()
-        scheduler.step()  # Update learning rate after each batch
 
         running_loss += loss.item()
         batches_processed += 1

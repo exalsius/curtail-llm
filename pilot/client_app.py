@@ -1,4 +1,3 @@
-import itertools
 import random
 from logging import INFO
 
@@ -35,25 +34,23 @@ def train(msg: Message, context: Context):
     model.to(device)
 
     dataset_name: str = config["dataset_name"]
-    worker_seed: int = config["worker_seed"]
-    epoch: int = config["epoch"]
-    batch_within_epoch: int = config["batch_within_epoch"]
+    shard_id: int = config["shard_id"]
+    num_shards: int = config["num_shards"]
+    processed_batches: int = config["processed_batches"]
     server_round: int = config["server_round"]
     num_batches: int = 80 + int(40 * random.random())  # TODO determine this via time
 
-    # Get train loader
     trainloader = get_train_loader(
         dataset_name=dataset_name,
-        worker_seed=worker_seed,
-        start_epoch=epoch,
-        start_batch=batch_within_epoch,
+        shard_id=shard_id,
+        num_shards=num_shards,
+        processed_batches=processed_batches,
         batch_size=context.run_config["batch_size"],
     )
 
     # Print training information
-    shuffle_seed = worker_seed + epoch
-    log(INFO, f"[Client {client_id}] Worker seed: {worker_seed}, Epoch: {epoch}, Batch: {batch_within_epoch}")
-    log(INFO, f"[Client {client_id}] Shuffle seed: {shuffle_seed}, Processing {num_batches} batches")
+    log(INFO, f"[Client {client_id}] Processing batch {processed_batches}-{processed_batches + num_batches} "
+              f"of shard {shard_id} ({num_shards} shards)")
     log(INFO, f"[Client {client_id}] Device: {device}")
 
     # Call the training function with progress tracking
@@ -66,11 +63,12 @@ def train(msg: Message, context: Context):
         weight_decay=config.get("weight_decay", 0.01),
     )
 
-    # Construct and return reply Message with client metrics
+    # Construct and return reply Message with shard state and client metrics
     model_record = ArrayRecord(model.state_dict())
     metrics = {
         "client_id": client_id,
         "train_loss": train_loss,
+        "shard_id": shard_id,
         "batches_processed": batches_processed,
     }
     metric_record = MetricRecord(metrics)

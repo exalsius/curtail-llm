@@ -16,7 +16,7 @@ from flwr.serverapp.strategy.strategy_utils import (
     validate_message_reply_consistency,
 )
 
-from pilot.data import get_test_loader, WorkerProgressTracker
+from pilot.data import get_test_loader, ShardManager
 from pilot.models import get_model
 from pilot.train_test import test
 
@@ -30,21 +30,19 @@ class PilotAvg(Strategy):
     def __init__(
         self,
         dataset_name: str,
-        dataset_size: int,
-        batch_size: int,
+        num_shards: int,
         client_debug_port: bool,
     ) -> None:
         self.dataset_name = dataset_name
-        self.dataset_size = dataset_size
-        self.batch_size = batch_size
-        self.progress_tracker = WorkerProgressTracker(dataset_size=dataset_size, batch_size=batch_size)
+        self.num_shards = num_shards
+        self.shard_manager = ShardManager(num_shards=num_shards)
         self.client_debug_port = client_debug_port
         self.weighted_by_key = "batches_processed"
 
     def summary(self) -> None:
         """Log summary configuration of the strategy."""
         log(INFO, "\t└──> Dataset: '%s'", self.dataset_name)
-        log(INFO, "\t└──> Progress Tracker: %s", self.progress_tracker)
+        log(INFO, "\t└──> Shard: '%s'", self.shard_manager)
 
     def configure_train(
         self, server_round: int, arrays: ArrayRecord, base_config: ConfigRecord, grid: Grid
@@ -53,27 +51,22 @@ class PilotAvg(Strategy):
         node_ids = list(grid.get_node_ids())
         log(INFO, "configure_train: Training on all %s nodes", len(node_ids))
 
+        # Get worker assignments from shard manager
+        assignments = self.shard_manager.assign_workers(node_ids)
+        log(INFO, f"Shard states: {self.shard_manager.shard_states}")
+        for node_id, (shard_id, processed_batches) in assignments.items():
+            log(INFO, f"└──> Assigning client {node_id} to shard {shard_id} ({processed_batches} processed batches)")
+
         base_config["server_round"] = server_round
         base_config["dataset_name"] = self.dataset_name
+        base_config["num_shards"] = self.num_shards
         if self.client_debug_port:
             base_config["client_debug_port"] = self.client_debug_port
 
         messages = []
         for node_id in node_ids:
-            # Get or create worker state
-            worker_state = self.progress_tracker.get_or_create_worker_state(node_id)
-            shuffle_seed = self.progress_tracker.get_shuffle_seed(node_id)
-
-            log(INFO, f"└──> Client {node_id}: seed={worker_state['seed']}, epoch={worker_state['epoch']}, "
-                     f"batch={worker_state['batch_within_epoch']}, shuffle_seed={shuffle_seed}")
-
-            # Add worker-specific config
-            config = ConfigRecord({
-                **base_config,
-                "worker_seed": worker_state["seed"],
-                "epoch": worker_state["epoch"],
-                "batch_within_epoch": worker_state["batch_within_epoch"],
-            })
+            shard_id, processed_batches = assignments[node_id]
+            config = ConfigRecord({**base_config, "shard_id": shard_id, "processed_batches": processed_batches})
             record = RecordDict({"arrays": arrays, "config": config})
             message = Message(content=record, message_type=MessageType.TRAIN, dst_node_id=node_id)
             messages.append(message)
@@ -86,17 +79,11 @@ class PilotAvg(Strategy):
         replies: Iterable[Message],
     ) -> tuple[Optional[ArrayRecord], Optional[MetricRecord]]:
         """Aggregate ArrayRecords and MetricRecords in the received Messages."""
-        # Update per-worker progress from results
+        # Update shard states from worker results
         for reply in replies:
             metrics: MetricRecord = reply.content["metrics"]
-            node_id = reply.metadata.src_node_id
-            batches_processed = metrics["batches_processed"]
-
-            self.progress_tracker.update_worker_progress(node_id, batches_processed)
-
-            worker_state = self.progress_tracker.worker_states[node_id]
-            log(INFO, f"[Round {server_round}] Worker {node_id} processed {batches_processed} batches. "
-                     f"New state: epoch={worker_state['epoch']}, batch={worker_state['batch_within_epoch']}")
+            self.shard_manager.add(metrics["shard_id"], metrics["batches_processed"])
+        print(f"[Round {server_round}] Final shard states: {self.shard_manager.shard_states}")
 
         # Default FedAvg aggregation
         valid_replies, _ = self._check_and_log_replies(replies, is_train=True)
@@ -116,20 +103,19 @@ class PilotAvg(Strategy):
                 if metrics:
                     log_dict["server/train_loss"] = metrics.get("train_loss", 0)
 
-                # Log individual client metrics and progress
+                # Log individual client metrics
                 for reply in valid_replies:
                     client_metrics: MetricRecord = reply.content["metrics"]
-                    client_id = client_metrics['client_id']
-                    node_id = reply.metadata.src_node_id
-                    worker_state = self.progress_tracker.worker_states[node_id]
-
-                    client_prefix = f"client_{client_id}"
+                    client_prefix = f"client_{client_metrics['client_id']}"
                     log_dict.update({
                         f"{client_prefix}/train_loss": client_metrics["train_loss"],
+                        f"{client_prefix}/shard_id": client_metrics["shard_id"],
                         f"{client_prefix}/batches_processed": client_metrics["batches_processed"],
-                        f"{client_prefix}/epoch": worker_state["epoch"],
-                        f"{client_prefix}/seed": worker_state["seed"],
                     })
+
+                # Add individual shard states
+                for shard_id, batches in enumerate(self.shard_manager.shard_states):
+                    log_dict[f"data/shard_{shard_id}_batches"] = batches
 
                 wandb.log(log_dict, step=server_round)
 
@@ -226,7 +212,7 @@ def main(grid: Grid, context: Context) -> None:
     num_rounds: int = context.run_config["num_rounds"]
     lr: float = context.run_config["lr"]
     dataset_name: str = context.run_config["dataset_name"]
-    dataset_size: int = context.run_config.get("dataset_size", 50000)  # CIFAR-10 train size
+    num_shards: int = context.run_config["num_shards"]
     batch_size: int = context.run_config["batch_size"]
     model_type: str = context.run_config["model_type"]
 
@@ -246,7 +232,7 @@ def main(grid: Grid, context: Context) -> None:
         num_supernodes = len(list(grid.get_node_ids()))
 
         # Create run name with hyperparameters
-        run_name = f"nodes{num_supernodes},bs{batch_size},rounds{num_rounds}"
+        run_name = f"nodes{num_supernodes},sh{num_shards},bs{batch_size},rounds{num_rounds}"
 
         wandb.init(
             project=wandb_project,
@@ -256,7 +242,7 @@ def main(grid: Grid, context: Context) -> None:
                 "num_supernodes": num_supernodes,
                 "learning_rate": lr,
                 "batch_size": batch_size,
-                "dataset_size": dataset_size,
+                "num_shards": num_shards,
                 "num_rounds": num_rounds,
                 "model_type": model_type,
                 "dataset_name": dataset_name,
@@ -268,11 +254,10 @@ def main(grid: Grid, context: Context) -> None:
     global_model = get_model(model_type)
     arrays = ArrayRecord(global_model.state_dict())
 
-    # Initialize FedAvg strategy with epoch management
+    # Initialize FedAvg strategy with shard management
     strategy = PilotAvg(
         dataset_name=dataset_name,
-        dataset_size=dataset_size,
-        batch_size=batch_size,
+        num_shards=num_shards,
         client_debug_port=context.run_config.get("client_debug_port", None),
     )
 
