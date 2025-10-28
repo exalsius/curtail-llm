@@ -150,7 +150,14 @@ def get_train_loader(dataset_name, shard_id, num_shards, processed_batches,
         streaming=use_streaming,
     )
 
-    raw_loader = DataLoader(sharded_dataset, batch_size=batch_size)
+    # Collate into dict of lists (avoids default tensor stacking on variable-length fields)
+    def collate_to_lists(samples):
+        if not samples:
+            return {}
+        keys = samples[0].keys()
+        return {k: [s[k] for s in samples] for k in keys}
+
+    raw_loader = DataLoader(sharded_dataset, batch_size=batch_size, collate_fn=collate_to_lists)
 
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_type)
@@ -171,8 +178,13 @@ def get_eval_loader(dataset_name, batch_size, model_type, max_length=512):
     _, eval_split = _ultrachat_splits(dataset_name)
     dataset = load_dataset(dataset_name, split=eval_split, streaming=use_streaming)
 
-    # Wrap as a simple PyTorch DataLoader
-    raw_loader = DataLoader(dataset, batch_size=batch_size)
+    # Wrap as a simple PyTorch DataLoader with dict-of-lists collation
+    def collate_to_lists(samples):
+        if not samples:
+            return {}
+        keys = samples[0].keys()
+        return {k: [s[k] for s in samples] for k in keys}
+    raw_loader = DataLoader(dataset, batch_size=batch_size, collate_fn=collate_to_lists)
 
     tokenizer = AutoTokenizer.from_pretrained(model_type)
     if tokenizer.pad_token is None:
