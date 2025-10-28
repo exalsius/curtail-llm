@@ -16,11 +16,19 @@ from flwr.serverapp.strategy.strategy_utils import (
     validate_message_reply_consistency,
 )
 
-from pilot.data import get_test_loader, ShardManager
-from pilot.models import get_model
-from pilot.train_test import test
+from pilot.data import ShardManager
+import pilot.vision as vision
+import pilot.llm as llm
 
 app = ServerApp()
+
+# Known vision model types
+VISION_MODELS = {"simple_cnn", "efficientnet_b0"}
+
+
+def is_vision_model(model_type: str) -> bool:
+    """Check if model is a vision model."""
+    return model_type in VISION_MODELS
 
 
 class PilotAvg(Strategy):
@@ -251,7 +259,12 @@ def main(grid: Grid, context: Context) -> None:
         log(INFO, "Wandb initialized with run_id: %s", wandb.run.id)
 
     # Load global model
-    global_model = get_model(model_type)
+    if is_vision_model(model_type):
+        global_model = vision.get_model(model_type)
+    else:
+        base_model = llm.get_model(model_type)
+        global_model = llm.apply_lora(base_model)
+
     arrays = ArrayRecord(global_model.state_dict())
 
     # Initialize FedAvg strategy with shard management
@@ -283,25 +296,22 @@ def main(grid: Grid, context: Context) -> None:
 
 def global_evaluate(server_round: int, arrays: ArrayRecord, model_type: str, dataset_name: str) -> MetricRecord:
     """Evaluate model on central test data."""
+    if not is_vision_model(model_type):
+        log(INFO, "LLM evaluation not implemented, skipping")
+        return MetricRecord({"accuracy": 0.0, "loss": 0.0})
 
-    # Load the model and initialize it with the received weights
-    model = get_model(model_type)
-    model.load_state_dict(arrays.to_torch_state_dict())
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model = vision.get_model(model_type)
+    model.load_state_dict(arrays.to_torch_state_dict())
     model.to(device)
 
-    # Load test set
-    test_dataloader = get_test_loader(dataset_name=dataset_name, batch_size=128)
+    test_dataloader = vision.get_test_loader(dataset_name=dataset_name, batch_size=128)
+    test_loss, test_acc = vision.test(model, test_dataloader, device)
 
-    # Evaluate the global model on the test set
-    test_loss, test_acc = test(model, test_dataloader, device)
-
-    # Log to wandb if enabled
     if wandb.run is not None:
         wandb.log({
             "server/eval_accuracy": test_acc,
             "server/eval_loss": test_loss,
         }, step=server_round)
 
-    # Return the evaluation metrics
     return MetricRecord({"accuracy": test_acc, "loss": test_loss})

@@ -1,17 +1,21 @@
-import random
 from logging import INFO
 
-import torch
-import wandb
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
 from flwr.common import ConfigRecord, log
 
-from pilot.models import get_model
-from pilot.data import get_train_loader
-from pilot.train_test import train as train_fn
+import pilot.vision as vision
+import pilot.llm as llm
 
 app = ClientApp()
+
+# Known vision model types
+VISION_MODELS = {"simple_cnn", "efficientnet_b0"}
+
+
+def get_task_type(model_type: str) -> str:
+    """Determine task type from model name."""
+    return "vision" if model_type in VISION_MODELS else "llm"
 
 
 @app.train()
@@ -26,97 +30,29 @@ def train(msg: Message, context: Context):
         import pydevd_pycharm
         pydevd_pycharm.settrace('localhost', port=client_debug_port, stdout_to_server=True, stderr_to_server=True)
 
-    # Load the model and initialize it with the received weights
     model_type = context.run_config["model_type"]
-    model = get_model(model_type)
-    model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+    task_type = context.run_config.get("task_type") or get_task_type(model_type)
 
-    dataset_name: str = config["dataset_name"]
-    shard_id: int = config["shard_id"]
-    num_shards: int = config["num_shards"]
-    processed_batches: int = config["processed_batches"]
-    server_round: int = config["server_round"]
-    num_batches: int = 80 + int(40 * random.random())  # TODO determine this via time
+    log(INFO, f"[Client {client_id}] Task: {task_type}, Model: {model_type}")
+    log(INFO, f"[Client {client_id}] Shard {config['shard_id']}/{config['num_shards']}, "
+              f"batch {config['processed_batches']}")
 
-    trainloader = get_train_loader(
-        dataset_name=dataset_name,
-        shard_id=shard_id,
-        num_shards=num_shards,
-        processed_batches=processed_batches,
-        batch_size=context.run_config["batch_size"],
+    if task_type == "vision":
+        state_dict, train_loss, batches_processed = vision.train_client(msg, config, context)
+    elif task_type == "llm":
+        state_dict, train_loss, batches_processed = llm.train_client(msg, config, context)
+    else:
+        raise ValueError(f"Unknown task type: {task_type}")
+
+    return Message(
+        content=RecordDict({
+            "arrays": ArrayRecord(state_dict),
+            "metrics": MetricRecord({
+                "client_id": client_id,
+                "train_loss": train_loss,
+                "shard_id": config["shard_id"],
+                "batches_processed": batches_processed,
+            }),
+        }),
+        reply_to=msg,
     )
-
-    # Print training information
-    log(INFO, f"[Client {client_id}] Processing batch {processed_batches}-{processed_batches + num_batches} "
-              f"of shard {shard_id} ({num_shards} shards)")
-    log(INFO, f"[Client {client_id}] Device: {device}")
-
-    # Call the training function with progress tracking
-    train_loss, batches_processed = train_fn(
-        model,
-        trainloader,
-        num_batches=num_batches,
-        lr=config["lr"],
-        device=device,
-        weight_decay=config.get("weight_decay", 0.01),
-    )
-
-    # Construct and return reply Message with shard state and client metrics
-    model_record = ArrayRecord(model.state_dict())
-    metrics = {
-        "client_id": client_id,
-        "train_loss": train_loss,
-        "shard_id": shard_id,
-        "batches_processed": batches_processed,
-    }
-    metric_record = MetricRecord(metrics)
-    content = RecordDict({"arrays": model_record, "metrics": metric_record})
-    return Message(content=content, reply_to=msg)
-
-
-# NOTE: For now we only evaluate globally
-
-# @app.evaluate()
-# def evaluate(msg: Message, context: Context):
-#     """Evaluate the model on local data."""
-#
-#     # Load the model and initialize it with the received weights
-#     model_type = context.run_config.get("model-type", "resnet18")
-#     model = get_model(model_type)
-#     model.load_state_dict(msg.content["arrays"].to_torch_state_dict())
-#     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-#     model.to(device)
-#
-#     # Load the data
-#     partition_id = context.node_config["partition-id"]
-#     num_partitions = context.node_config["num-partitions"]
-#     batch_size = context.run_config["batch-size"]
-#     _, valloader = get_data_loaders(
-#         data_type="cifar10",
-#         partition_id=partition_id,
-#         num_partitions=num_partitions,
-#         batch_size=batch_size,
-#         model_type=model_type
-#     )
-#
-#     # Print evaluation information
-#     print(f"[Client {partition_id}] Evaluating on {len(valloader.dataset)} samples")
-#
-#     # Call the evaluation function
-#     eval_loss, eval_acc = test_fn(
-#         model,
-#         valloader,
-#         device,
-#     )
-#
-#     # Construct and return reply Message
-#     metrics = {
-#         "eval_loss": eval_loss,
-#         "eval_acc": eval_acc,
-#         "num-examples": len(valloader.dataset),
-#     }
-#     metric_record = MetricRecord(metrics)
-#     content = RecordDict({"metrics": metric_record})
-#     return Message(content=content, reply_to=msg)
