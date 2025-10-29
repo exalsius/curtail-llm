@@ -43,6 +43,7 @@ class PilotAvg(Strategy):
         wandb_run_id: Optional[str] = None,
         wandb_project: Optional[str] = None,
         wandb_entity: Optional[str] = None,
+        wandb_run_group: Optional[str] = None,
     ) -> None:
         self.dataset_name = dataset_name
         self.num_shards = num_shards
@@ -52,6 +53,7 @@ class PilotAvg(Strategy):
         self.wandb_run_id = wandb_run_id
         self.wandb_project = wandb_project
         self.wandb_entity = wandb_entity
+        self.wandb_run_group = wandb_run_group
 
     def summary(self) -> None:
         """Log summary configuration of the strategy."""
@@ -80,6 +82,7 @@ class PilotAvg(Strategy):
         # Pass W&B configuration to clients
         base_config["wandb_run_id"] = self.wandb_run_id
         base_config["wandb_project"] = self.wandb_project
+        base_config["wandb_group"] = self.wandb_run_group
         if self.wandb_entity:
             base_config["wandb_entity"] = self.wandb_entity
 
@@ -268,11 +271,7 @@ def main(grid: Grid, context: Context) -> None:
         project=wandb_project,
         entity=wandb_entity,
         name=run_name,
-        settings=wandb.Settings(
-            x_label="server",
-            mode="shared",
-            x_primary=True,
-        ),
+        group=run_name,  # Group all runs together
         config={
             "num_supernodes": num_supernodes,
             "learning_rate": lr,
@@ -286,6 +285,7 @@ def main(grid: Grid, context: Context) -> None:
     log(INFO, "Wandb initialized with run_id: %s", wandb.run.id)
 
     wandb_run_id = wandb.run.id
+    wandb_run_group = run_name
 
     # Load global model
     if is_vision_model(model_type):
@@ -304,6 +304,7 @@ def main(grid: Grid, context: Context) -> None:
         wandb_run_id=wandb_run_id,
         wandb_project=wandb_project,
         wandb_entity=wandb_entity,
+        wandb_run_group=wandb_run_group,
     )
 
     # Start strategy, run FedAvg for `num_rounds`

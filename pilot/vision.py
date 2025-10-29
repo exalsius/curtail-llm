@@ -236,6 +236,7 @@ def train_client(msg, config, context):
     # W&B configuration for client
     wandb_run_id = config["wandb_run_id"]
     wandb_project = config["wandb_project"]
+    wandb_group = config["wandb_group"]
     wandb_entity = config.get("wandb_entity")
     log_interval = context.run_config.get("log_interval")
 
@@ -246,14 +247,13 @@ def train_client(msg, config, context):
     wandb.init(
         project=wandb_project,
         entity=wandb_entity,
-        id=wandb_run_id,
-        settings=wandb.Settings(
-            x_label=f"client_{client_id}",
-            mode="shared",
-            x_primary=False,
-        ),
+        name=f"client_{client_id}",
+        id=f"{wandb_run_id}_{client_id}",
+        group=wandb_group,
+        resume="allow",
+        reinit=True,
     )
-    log(INFO, f"Client {client_id}: W&B initialized with run_id {wandb_run_id}")
+    log(INFO, f"Client {client_id}: W&B initialized with run_id {wandb_run_id}_{client_id}")
 
     # Determine number of batches
     import random
