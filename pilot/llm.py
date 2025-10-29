@@ -1,7 +1,7 @@
 """LLM models, data loading, and training with LoRA fine-tuning."""
 
 import itertools
-import random
+import contextlib
 
 import torch
 from torch.utils.data import DataLoader
@@ -16,27 +16,15 @@ from pilot.data import ShardedDataset
 # Models
 # ============================================================================
 
-def get_model(model_name, load_in_8bit=False, load_in_4bit=False, **kwargs):
+def get_model(model_name, **kwargs):
     """Load HuggingFace LLM model."""
-    # Quantization config
-    if load_in_8bit or load_in_4bit:
-        try:
-            from transformers import BitsAndBytesConfig
-            kwargs["quantization_config"] = BitsAndBytesConfig(
-                load_in_8bit=load_in_8bit,
-                load_in_4bit=load_in_4bit,
-            )
-        except ImportError:
-            print("Warning: bitsandbytes not installed. Loading in full precision.")
-
-    model = AutoModelForCausalLM.from_pretrained(
+    return AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        torch_dtype=torch.float32,
         device_map=None,
         trust_remote_code=True,
         **kwargs
     )
-    return model
 
 
 def apply_lora(model, lora_config=None):
@@ -199,14 +187,13 @@ def get_eval_loader(dataset_name, batch_size, model_type, max_length=512):
 
 def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
           gradient_accumulation_steps=1):
-    """Train LLM with LoRA."""
+    """Train LLM with LoRA using BF16 mixed precision."""
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     model.train()
 
     total_loss = 0.0
     batches_processed = 0
-
     pbar = tqdm(enumerate(trainloader), total=num_batches, desc="Training")
 
     for batch_idx, batch in pbar:
@@ -217,8 +204,12 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"].to(device)
 
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-        loss = outputs.loss / gradient_accumulation_steps
+        # Forward pass in BF16 (parameters stay FP32, compute happens in BF16)
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+            loss = outputs.loss / gradient_accumulation_steps
+
+        # Backward pass (gradients computed in BF16, accumulated in FP32)
         loss.backward()
 
         if (batch_idx + 1) % gradient_accumulation_steps == 0:
@@ -246,7 +237,11 @@ def evaluate(model, evalloader, num_batches, device):
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"].to(device)
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+
+        # Inference in BF16
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+
         total_loss += outputs.loss.item()
         batches += 1
 
