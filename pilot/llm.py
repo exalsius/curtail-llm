@@ -275,8 +275,12 @@ def train_client(msg, config, context):
     if dataset_name != "HuggingFaceH4/ultrachat_200k":
         raise ValueError("LLM train_client is specialized for HuggingFaceH4/ultrachat_200k")
 
-    num_batches = 1000 - 200 + int(400 * random.random())
-    log(INFO, f"[Client {context.node_config['partition-id']}] Training for {num_batches} batches on device {device}")
+    # Full epoch over this client's shard
+    from datasets import load_dataset
+    train_split, _ = _ultrachat_splits(dataset_name)
+    total_size = len(load_dataset(dataset_name, split=train_split))
+    shard_size = total_size // num_shards
+    num_batches = max(1, shard_size // batch_size)
 
     base_model = get_model(model_type)
     model = apply_lora(base_model, lora_config)
