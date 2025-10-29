@@ -276,6 +276,7 @@ def train_client(msg, config, context):
         raise ValueError("LLM train_client is specialized for HuggingFaceH4/ultrachat_200k")
 
     num_batches = 1000 - 200 + int(400 * random.random())
+    log(INFO, f"[Client {context.node_config['partition-id']}] Training for {num_batches} batches on device {device}")
 
     base_model = get_model(model_type)
     model = apply_lora(base_model, lora_config)
