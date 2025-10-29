@@ -51,9 +51,9 @@ serverapp = "pilot.server_app:app"
 clientapp = "pilot.client_app:app"
 
 [tool.flwr.app.config]
-wandb_enabled = true
 wandb_project = "pilot_flwr"
 # wandb_entity = ""  # Optional wandb username / team name
+log_interval = 10  # Log client metrics every N batches
 # server_debug_port = 5681
 # client_debug_port = 5682
 

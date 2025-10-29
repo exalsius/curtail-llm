@@ -1,9 +1,9 @@
 """LLM models, data loading, and training with LoRA fine-tuning."""
 
-import random
 from logging import INFO
 
 import torch
+import wandb
 from flwr.common import log
 from torch.utils.data import DataLoader
 from peft import LoraConfig, get_peft_model, TaskType
@@ -187,7 +187,7 @@ def get_eval_loader(dataset_name, batch_size, model_type, max_length=512):
 # ============================================================================
 
 def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
-          gradient_accumulation_steps=1):
+          gradient_accumulation_steps=1, log_interval=None, server_round=None):
     """Train LLM with LoRA using BF16 mixed precision."""
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -214,8 +214,25 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
         loss.backward()
 
         if (batch_idx + 1) % gradient_accumulation_steps == 0:
+            # Compute gradient norm before optimizer step
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float('inf'))
+
             optimizer.step()
             optimizer.zero_grad()
+
+            # Log periodically to W&B
+            if log_interval and (batch_idx + 1) % log_interval == 0:
+                log_dict = {
+                    "train_loss": loss.item() * gradient_accumulation_steps,
+                    "train_ppl": float(torch.exp(loss * gradient_accumulation_steps).item()),
+                    "learning_rate": optimizer.param_groups[0]["lr"],
+                    "gradient_norm": grad_norm.item(),
+                    "batch_idx": batch_idx,
+                }
+
+                # Use global step that combines server round and batch index
+                global_step = server_round * 10000 + batch_idx if server_round is not None else batch_idx
+                wandb.log(log_dict, step=global_step)
 
         total_loss += loss.item() * gradient_accumulation_steps
         batches_processed += 1
@@ -271,6 +288,27 @@ def train_client(msg, config, context):
     gradient_accumulation_steps = context.run_config.get("gradient_accumulation_steps", 1)
     lora_config = context.run_config.get("lora_config", None)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    server_round = config.get("server_round", 0)
+
+    # W&B configuration for client
+    wandb_run_id = config["wandb_run_id"]
+    wandb_project = config["wandb_project"]
+    wandb_entity = config.get("wandb_entity")
+    log_interval = context.run_config.get("log_interval")
+
+    # Get client ID from context
+    client_id = context.node_id
+
+    # Initialize W&B for this client
+    wandb.init(
+        project=wandb_project,
+        entity=wandb_entity,
+        id=wandb_run_id,
+        group=f"client_{client_id}",
+        resume="allow",
+        reinit=True,
+    )
+    log(INFO, f"Client {client_id}: W&B initialized with run_id {wandb_run_id}")
 
     if dataset_name != "HuggingFaceH4/ultrachat_200k":
         raise ValueError("LLM train_client is specialized for HuggingFaceH4/ultrachat_200k")
@@ -305,6 +343,8 @@ def train_client(msg, config, context):
         device=device,
         weight_decay=weight_decay,
         gradient_accumulation_steps=gradient_accumulation_steps,
+        log_interval=log_interval,
+        server_round=server_round,
     )
 
     # Compute perplexity from training loss

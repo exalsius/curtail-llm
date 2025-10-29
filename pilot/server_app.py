@@ -40,12 +40,18 @@ class PilotAvg(Strategy):
         dataset_name: str,
         num_shards: int,
         client_debug_port: bool,
+        wandb_run_id: Optional[str] = None,
+        wandb_project: Optional[str] = None,
+        wandb_entity: Optional[str] = None,
     ) -> None:
         self.dataset_name = dataset_name
         self.num_shards = num_shards
         self.shard_manager = ShardManager(num_shards=num_shards)
         self.client_debug_port = client_debug_port
         self.weighted_by_key = "batches_processed"
+        self.wandb_run_id = wandb_run_id
+        self.wandb_project = wandb_project
+        self.wandb_entity = wandb_entity
 
     def summary(self) -> None:
         """Log summary configuration of the strategy."""
@@ -70,6 +76,12 @@ class PilotAvg(Strategy):
         base_config["num_shards"] = self.num_shards
         if self.client_debug_port:
             base_config["client_debug_port"] = self.client_debug_port
+
+        # Pass W&B configuration to clients
+        base_config["wandb_run_id"] = self.wandb_run_id
+        base_config["wandb_project"] = self.wandb_project
+        if self.wandb_entity:
+            base_config["wandb_entity"] = self.wandb_entity
 
         messages = []
         for node_id in node_ids:
@@ -101,44 +113,43 @@ class PilotAvg(Strategy):
             arrays = aggregate_arrayrecords(reply_contents, self.weighted_by_key)
             metrics = aggregate_metricrecords(reply_contents, self.weighted_by_key)  # can be customized
 
-            # Log to wandb if enabled
-            if wandb.run is not None:
-                log_dict = {
-                    "server/num_clients": len(valid_replies),
-                }
+            # Log to wandb
+            log_dict = {
+                "server/num_clients": len(valid_replies),
+            }
 
-                # Log aggregated server metrics
-                if metrics:
-                    log_dict["server/train_loss"] = metrics.get("train_loss", 0)
-                    if "train_ppl" in metrics:
-                        log_dict["server/train_ppl"] = metrics.get("train_ppl", 0)
-                    if "val_loss" in metrics:
-                        log_dict["server/val_loss"] = metrics.get("val_loss", 0)
-                    if "val_ppl" in metrics:
-                        log_dict["server/val_ppl"] = metrics.get("val_ppl", 0)
+            # Log aggregated server metrics
+            if metrics:
+                log_dict["server/train_loss"] = metrics.get("train_loss", 0)
+                if "train_ppl" in metrics:
+                    log_dict["server/train_ppl"] = metrics.get("train_ppl", 0)
+                if "val_loss" in metrics:
+                    log_dict["server/val_loss"] = metrics.get("val_loss", 0)
+                if "val_ppl" in metrics:
+                    log_dict["server/val_ppl"] = metrics.get("val_ppl", 0)
 
-                # Log individual client metrics
-                for reply in valid_replies:
-                    client_metrics: MetricRecord = reply.content["metrics"]
-                    client_prefix = f"client_{client_metrics['client_id']}"
-                    # Always present
-                    log_dict[f"{client_prefix}/shard_id"] = client_metrics["shard_id"]
-                    log_dict[f"{client_prefix}/batches_processed"] = client_metrics["batches_processed"]
-                    # Optional metrics, add if available
-                    if "train_loss" in client_metrics:
-                        log_dict[f"{client_prefix}/train_loss"] = client_metrics["train_loss"]
-                    if "train_ppl" in client_metrics:
-                        log_dict[f"{client_prefix}/train_ppl"] = client_metrics["train_ppl"]
-                    if "val_loss" in client_metrics:
-                        log_dict[f"{client_prefix}/val_loss"] = client_metrics["val_loss"]
-                    if "val_ppl" in client_metrics:
-                        log_dict[f"{client_prefix}/val_ppl"] = client_metrics["val_ppl"]
+            # Log individual client metrics
+            for reply in valid_replies:
+                client_metrics: MetricRecord = reply.content["metrics"]
+                client_prefix = f"client_{client_metrics['client_id']}"
+                # Always present
+                log_dict[f"{client_prefix}/shard_id"] = client_metrics["shard_id"]
+                log_dict[f"{client_prefix}/batches_processed"] = client_metrics["batches_processed"]
+                # Optional metrics, add if available
+                if "train_loss" in client_metrics:
+                    log_dict[f"{client_prefix}/train_loss"] = client_metrics["train_loss"]
+                if "train_ppl" in client_metrics:
+                    log_dict[f"{client_prefix}/train_ppl"] = client_metrics["train_ppl"]
+                if "val_loss" in client_metrics:
+                    log_dict[f"{client_prefix}/val_loss"] = client_metrics["val_loss"]
+                if "val_ppl" in client_metrics:
+                    log_dict[f"{client_prefix}/val_ppl"] = client_metrics["val_ppl"]
 
-                # Add individual shard states
-                for shard_id, batches in enumerate(self.shard_manager.shard_states):
-                    log_dict[f"data/shard_{shard_id}_batches"] = batches
+            # Add individual shard states
+            for shard_id, batches in enumerate(self.shard_manager.shard_states):
+                log_dict[f"data/shard_{shard_id}_batches"] = batches
 
-                wandb.log(log_dict, step=server_round)
+            wandb.log(log_dict, step=server_round)
 
         return arrays, metrics
 
@@ -243,33 +254,34 @@ def main(grid: Grid, context: Context) -> None:
         import pydevd_pycharm
         pydevd_pycharm.settrace('localhost', port=server_debug_port, stdout_to_server=True, stderr_to_server=True)
 
-    # Initialize wandb if enabled
-    wandb_enabled: bool = context.run_config.get("wandb_enabled", False)
-    if wandb_enabled:
-        wandb_project: str = context.run_config["wandb_project"]
-        wandb_entity: str | None = context.run_config.get("wandb_entity")
+    # Initialize wandb
+    wandb_project: str = context.run_config["wandb_project"]
+    wandb_entity: str | None = context.run_config.get("wandb_entity")
 
-        # Get number of supernodes from grid
-        num_supernodes = len(list(grid.get_node_ids()))
+    # Get number of supernodes from grid
+    num_supernodes = len(list(grid.get_node_ids()))
 
-        # Create run name with hyperparameters
-        run_name = f"nodes{num_supernodes},sh{num_shards},bs{batch_size},rounds{num_rounds}"
+    # Create run name with hyperparameters
+    run_name = f"nodes{num_supernodes},sh{num_shards},bs{batch_size},rounds{num_rounds}"
 
-        wandb.init(
-            project=wandb_project,
-            entity=wandb_entity,
-            name=run_name,
-            config={
-                "num_supernodes": num_supernodes,
-                "learning_rate": lr,
-                "batch_size": batch_size,
-                "num_shards": num_shards,
-                "num_rounds": num_rounds,
-                "model_type": model_type,
-                "dataset_name": dataset_name,
-            }
-        )
-        log(INFO, "Wandb initialized with run_id: %s", wandb.run.id)
+    wandb.init(
+        project=wandb_project,
+        entity=wandb_entity,
+        name=run_name,
+        group="server",  # Server process group
+        config={
+            "num_supernodes": num_supernodes,
+            "learning_rate": lr,
+            "batch_size": batch_size,
+            "num_shards": num_shards,
+            "num_rounds": num_rounds,
+            "model_type": model_type,
+            "dataset_name": dataset_name,
+        }
+    )
+    log(INFO, "Wandb initialized with run_id: %s", wandb.run.id)
+
+    wandb_run_id = wandb.run.id
 
     # Load global model
     if is_vision_model(model_type):
@@ -285,6 +297,9 @@ def main(grid: Grid, context: Context) -> None:
         dataset_name=dataset_name,
         num_shards=num_shards,
         client_debug_port=context.run_config.get("client_debug_port", None),
+        wandb_run_id=wandb_run_id,
+        wandb_project=wandb_project,
+        wandb_entity=wandb_entity,
     )
 
     # Start strategy, run FedAvg for `num_rounds`
@@ -302,9 +317,8 @@ def main(grid: Grid, context: Context) -> None:
     torch.save(state_dict, "final_model.pt")
 
     # Finish wandb run
-    if wandb_enabled:
-        wandb.finish()
-        log(INFO, "Wandb run finished")
+    wandb.finish()
+    log(INFO, "Wandb run finished")
 
 
 def global_evaluate(server_round: int, arrays: ArrayRecord, model_type: str, dataset_name: str) -> MetricRecord:
@@ -321,10 +335,9 @@ def global_evaluate(server_round: int, arrays: ArrayRecord, model_type: str, dat
     test_dataloader = vision.get_test_loader(dataset_name=dataset_name, batch_size=128)
     test_loss, test_acc = vision.test(model, test_dataloader, device)
 
-    if wandb.run is not None:
-        wandb.log({
-            "server/eval_accuracy": test_acc,
-            "server/eval_loss": test_loss,
-        }, step=server_round)
+    wandb.log({
+        "server/eval_accuracy": test_acc,
+        "server/eval_loss": test_loss,
+    }, step=server_round)
 
     return MetricRecord({"accuracy": test_acc, "loss": test_loss})

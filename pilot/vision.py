@@ -4,6 +4,7 @@ from logging import INFO
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import wandb
 from flwr.common import log
 from torch.utils.data import DataLoader
 from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
@@ -144,7 +145,8 @@ def get_test_loader(dataset_name, batch_size):
 # Training & Evaluation
 # ============================================================================
 
-def train(model, trainloader, num_batches, lr, device, weight_decay=0.01):
+def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
+          log_interval=None, server_round=None):
     """Train vision model for specified number of batches."""
     model.to(device)
     criterion = nn.CrossEntropyLoss().to(device)
@@ -154,17 +156,34 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01):
     running_loss = 0.0
     batches_processed = 0
 
-    for batch in tqdm(trainloader, desc="Training", total=num_batches):
+    for batch_idx, batch in enumerate(tqdm(trainloader, desc="Training", total=num_batches)):
         images = batch["img"].to(device) if "img" in batch else batch["image"].to(device)
         labels = batch["label"].to(device)
 
         optimizer.zero_grad()
         loss = criterion(model(images), labels)
         loss.backward()
+
+        # Compute gradient norm before optimizer step
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float('inf'))
+
         optimizer.step()
 
         running_loss += loss.item()
         batches_processed += 1
+
+        # Log periodically to W&B
+        if log_interval and (batch_idx + 1) % log_interval == 0:
+            log_dict = {
+                "train_loss": loss.item(),
+                "learning_rate": optimizer.param_groups[0]["lr"],
+                "gradient_norm": grad_norm.item(),
+                "batch_idx": batch_idx,
+            }
+
+            # Use global step that combines server round and batch index
+            global_step = server_round * 10000 + batch_idx if server_round is not None else batch_idx
+            wandb.log(log_dict, step=global_step)
 
         if batches_processed >= num_batches:
             break
@@ -212,6 +231,27 @@ def train_client(msg, config, context):
     lr = config["lr"]
     weight_decay = config.get("weight_decay", 0.01)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    server_round = config.get("server_round", 0)
+
+    # W&B configuration for client
+    wandb_run_id = config["wandb_run_id"]
+    wandb_project = config["wandb_project"]
+    wandb_entity = config.get("wandb_entity")
+    log_interval = context.run_config.get("log_interval")
+
+    # Get client ID from context
+    client_id = context.node_id
+
+    # Initialize W&B for this client
+    wandb.init(
+        project=wandb_project,
+        entity=wandb_entity,
+        id=wandb_run_id,
+        group=f"client_{client_id}",
+        resume="allow",
+        reinit=True,
+    )
+    log(INFO, f"Client {client_id}: W&B initialized with run_id {wandb_run_id}")
 
     # Determine number of batches
     import random
@@ -240,6 +280,8 @@ def train_client(msg, config, context):
         lr=lr,
         device=device,
         weight_decay=weight_decay,
+        log_interval=log_interval,
+        server_round=server_round,
     )
 
     return model.state_dict(), train_loss, batches_processed
