@@ -87,7 +87,7 @@ default = "local-simulation"
 options.num-supernodes = 1
 
 [tool.flwr.federations.local-simulation-gpu]
-options.num-supernodes = 3
+options.num-supernodes = 1
 options.backend.client-resources.num-gpus = 1
 options.backend.client-resources.num-cpus = 8
 
