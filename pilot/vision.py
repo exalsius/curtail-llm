@@ -247,9 +247,11 @@ def train_client(msg, config, context):
         project=wandb_project,
         entity=wandb_entity,
         id=wandb_run_id,
-        group=f"client_{client_id}",
-        resume="allow",
-        reinit=True,
+        settings=wandb.Settings(
+            x_label=f"client_{client_id}",
+            mode="shared",
+            x_primary=False,
+        ),
     )
     log(INFO, f"Client {client_id}: W&B initialized with run_id {wandb_run_id}")
 

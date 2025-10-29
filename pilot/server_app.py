@@ -268,7 +268,11 @@ def main(grid: Grid, context: Context) -> None:
         project=wandb_project,
         entity=wandb_entity,
         name=run_name,
-        group="server",  # Server process group
+        settings=wandb.Settings(
+            x_label="server",
+            mode="shared",
+            x_primary=True,
+        ),
         config={
             "num_supernodes": num_supernodes,
             "learning_rate": lr,
