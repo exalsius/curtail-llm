@@ -1,8 +1,10 @@
 """Vision models, data loading, and training for image classification."""
+from logging import INFO
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from flwr.common import log
 from torch.utils.data import DataLoader
 from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 from torchvision.transforms import Compose, Normalize, ToTensor, Resize
@@ -214,6 +216,7 @@ def train_client(msg, config, context):
     # Determine number of batches
     import random
     num_batches = 80 + int(40 * random.random())
+    log(INFO, f"[Client {context.node_config['partition-id']}] Training for {num_batches} batches on device {device}")
 
     # Load model
     model = get_model(model_type)
