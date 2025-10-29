@@ -1,10 +1,10 @@
 """LLM models, data loading, and training with LoRA fine-tuning."""
 
-import itertools
-import contextlib
 import random
+from logging import INFO
 
 import torch
+from flwr.common import log
 from torch.utils.data import DataLoader
 from peft import LoraConfig, get_peft_model, TaskType
 from transformers import AutoModelForCausalLM, AutoTokenizer
