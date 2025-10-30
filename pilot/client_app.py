@@ -24,7 +24,11 @@ def train(msg: Message, context: Context):
         pydevd_pycharm.settrace('localhost', port=client_debug_port, stdout_to_server=True, stderr_to_server=True)
 
     # Get cumulative batches from client state (persists across rounds)
-    cumulative_batches = context.state.get("cumulative_batches", 0)
+    # context.state stores MetricRecord, so we need to extract the value
+    if "cumulative_batches" in context.state:
+        cumulative_batches = int(context.state["cumulative_batches"]["cumulative_batches"])
+    else:
+        cumulative_batches = 0
 
     model_type = context.run_config["model_type"]
     task_type = context.run_config["task_type"]
@@ -46,7 +50,9 @@ def train(msg: Message, context: Context):
         raise ValueError(f"Unknown task type: {task_type}")
 
     # Update cumulative batches in client state
-    context.state["cumulative_batches"] = cumulative_batches + batches_processed
+    # Store as MetricRecord since context.state only accepts Record types
+    new_cumulative_batches = cumulative_batches + batches_processed
+    context.state["cumulative_batches"] = MetricRecord({"cumulative_batches": new_cumulative_batches})
 
     return Message(
         content=RecordDict({
@@ -55,7 +61,7 @@ def train(msg: Message, context: Context):
                 "client_id": client_id,
                 "shard_id": config["shard_id"],
                 "batches_processed": batches_processed,
-                "cumulative_batches": context.state["cumulative_batches"],
+                "cumulative_batches": new_cumulative_batches,
                 **metrics_payload,
             }),
         }),
