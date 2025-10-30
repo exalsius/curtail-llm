@@ -461,6 +461,100 @@ def get_eval_loader(
     return dataloader
 
 
+def get_server_eval_loader(
+    dataset_name: str,
+    batch_size: int,
+    model_type: str,
+    max_length: int = 256,
+    holdout_fraction: float = 0.1,
+):
+    """Create server-side evaluation dataloader using holdout fraction of training data.
+
+    Args:
+        dataset_name: Name of the Medical Meadow dataset
+        batch_size: Batch size for evaluation
+        model_type: Model type (for tokenizer selection)
+        max_length: Maximum sequence length
+        holdout_fraction: Fraction of training data to use for evaluation (default 10%)
+
+    Returns:
+        DataLoader for server evaluation
+    """
+    if dataset_name not in MEDICAL_DATASETS:
+        raise ValueError(f"Unknown medical dataset: {dataset_name}")
+
+    log(INFO, f"Loading medical server evaluation data: {dataset_name} (holdout: {holdout_fraction*100:.0f}%)")
+
+    # Load tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_type)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # Load prompt template
+    template_path = os.path.join(
+        os.path.dirname(__file__),
+        "prompt_templates/medalpaca.json"
+    )
+    data_handler = MedicalDataHandler(tokenizer, template_path, max_length)
+
+    # Load dataset
+    if dataset_name == "medalpaca/medical_meadow_curated":
+        dataset = get_combined_medical_meadow()
+    else:
+        dataset = load_dataset(dataset_name, split="train")
+
+    # Calculate holdout range (last N% of training data)
+    total_size = len(dataset)
+    holdout_size = int(total_size * holdout_fraction)
+    holdout_start = total_size - holdout_size
+
+    # Select holdout subset
+    holdout_dataset = dataset.select(range(holdout_start, total_size))
+
+    # Tokenize dataset
+    def tokenize_fn(example):
+        return data_handler.generate_and_tokenize_prompt(example)
+
+    tokenized_dataset = holdout_dataset.map(
+        tokenize_fn,
+        remove_columns=holdout_dataset.column_names,
+    )
+
+    # Create dataloader
+    from torch.utils.data import DataLoader
+
+    def collate_fn(batch):
+        """Collate batch with padding."""
+        input_ids = [torch.tensor(item["input_ids"]) for item in batch]
+        attention_mask = [torch.tensor(item["attention_mask"]) for item in batch]
+        labels = [torch.tensor(item["labels"]) for item in batch]
+
+        # Pad sequences
+        input_ids = torch.nn.utils.rnn.pad_sequence(
+            input_ids, batch_first=True, padding_value=tokenizer.pad_token_id
+        )
+        attention_mask = torch.nn.utils.rnn.pad_sequence(
+            attention_mask, batch_first=True, padding_value=0
+        )
+        labels = torch.nn.utils.rnn.pad_sequence(
+            labels, batch_first=True, padding_value=-100
+        )
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+        }
+
+    dataloader = DataLoader(
+        tokenized_dataset,
+        batch_size=batch_size,
+        collate_fn=collate_fn,
+    )
+
+    return dataloader
+
+
 # ============================================================================
 # Training (Reused from llm.py with medical-specific adaptations)
 # ============================================================================
@@ -688,19 +782,7 @@ def train_client(msg, config, context):
     # Compute perplexity from training loss
     train_ppl = float(torch.exp(torch.tensor(train_loss)).item()) if train_loss > 0 else float("inf")
 
-    # Quick eval for progress tracking
-    evalloader = get_eval_loader(
-        dataset_name=dataset_name,
-        batch_size=batch_size,
-        model_type=model_type,
-        max_length=max_length,
-    )
-    # Cap eval to a moderate number of batches
-    eval_batches = min(200, num_batches)
-    val_loss = evaluate(model, evalloader, num_batches=eval_batches, device=device)
-    val_ppl = float(torch.exp(torch.tensor(val_loss)).item()) if val_loss > 0 else float("inf")
-
-    train_metrics = {"train_loss": train_loss, "train_ppl": train_ppl, "val_loss": val_loss, "val_ppl": val_ppl}
+    train_metrics = {"train_loss": train_loss, "train_ppl": train_ppl}
 
     # Extract state dict before cleanup
     model_state = model.state_dict()

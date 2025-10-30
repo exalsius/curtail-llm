@@ -137,10 +137,6 @@ class PilotAvg(Strategy):
                 log_dict["server/train_loss"] = metrics.get("train_loss", 0)
                 if "train_ppl" in metrics:
                     log_dict["server/train_ppl"] = metrics.get("train_ppl", 0)
-                if "val_loss" in metrics:
-                    log_dict["server/val_loss"] = metrics.get("val_loss", 0)
-                if "val_ppl" in metrics:
-                    log_dict["server/val_ppl"] = metrics.get("val_ppl", 0)
 
             # Log individual client metrics
             for reply in valid_replies:
@@ -154,10 +150,6 @@ class PilotAvg(Strategy):
                     log_dict[f"{client_prefix}/train_loss"] = client_metrics["train_loss"]
                 if "train_ppl" in client_metrics:
                     log_dict[f"{client_prefix}/train_ppl"] = client_metrics["train_ppl"]
-                if "val_loss" in client_metrics:
-                    log_dict[f"{client_prefix}/val_loss"] = client_metrics["val_loss"]
-                if "val_ppl" in client_metrics:
-                    log_dict[f"{client_prefix}/val_ppl"] = client_metrics["val_ppl"]
 
             # Add individual shard states
             for shard_id, batches in enumerate(self.shard_manager.shard_states):
@@ -377,12 +369,20 @@ def main(grid: Grid, context: Context) -> None:
         wandb_run_group=wandb_run_group,
     )
 
+    # Get max_length from run_config (default depends on model type)
+    if is_medical_model(model_type):
+        max_length = context.run_config.get("max_length", 256)  # Medical models use 256
+    else:
+        max_length = context.run_config.get("max_length", 512)  # LLM models use 512
+
     result = strategy.start(
         grid=grid,
         initial_arrays=arrays,
         train_config=ConfigRecord(dict(lr=lr)),
         num_rounds=num_rounds,
-        evaluate_fn=lambda round, arrays: global_evaluate(round, arrays, model_type, dataset_name),
+        evaluate_fn=lambda round, arrays: global_evaluate(
+            round, arrays, model_type, dataset_name, batch_size, max_length
+        ),
     )
 
     # Save final model to disk
@@ -395,29 +395,122 @@ def main(grid: Grid, context: Context) -> None:
     log(INFO, "Wandb run finished")
 
 
-def global_evaluate(server_round: int, arrays: ArrayRecord, model_type: str, dataset_name: str) -> MetricRecord:
-    """Evaluate model on central test data."""
-    if not is_vision_model(model_type):
-        log(INFO, "LLM evaluation not implemented, skipping")
-        return MetricRecord({"accuracy": 0.0, "loss": 0.0})
+def global_evaluate(
+    server_round: int,
+    arrays: ArrayRecord,
+    model_type: str,
+    dataset_name: str,
+    batch_size: int = 32,
+    max_length: int = 512,
+) -> MetricRecord:
+    """Evaluate model on holdout test data.
 
+    Args:
+        server_round: Current training round
+        arrays: Model weights to evaluate
+        model_type: Type of model (vision, LLM, or medical)
+        dataset_name: Name of the dataset
+        batch_size: Batch size for evaluation
+        max_length: Maximum sequence length (for LLM/medical models)
+
+    Returns:
+        MetricRecord with evaluation metrics
+    """
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model = vision.get_model(model_type)
-    model.load_state_dict(arrays.to_torch_state_dict())
-    model.to(device)
 
-    test_dataloader = vision.get_test_loader(dataset_name=dataset_name, batch_size=128)
-    test_loss, test_acc = vision.test(model, test_dataloader, device)
+    # Vision models
+    if is_vision_model(model_type):
+        log(INFO, f"Server evaluation: Vision model on {dataset_name}")
+        model = vision.get_model(model_type)
+        model.load_state_dict(arrays.to_torch_state_dict())
+        model.to(device)
 
-    wandb.log({
-        "server/eval_accuracy": test_acc,
-        "server/eval_loss": test_loss,
-    }, step=server_round)
+        test_dataloader = vision.get_test_loader(dataset_name=dataset_name, batch_size=batch_size)
+        test_loss, test_acc = vision.test(model, test_dataloader, device)
 
-    # TEMPORARY: Clean up evaluation model in simulation mode
-    del model
-    import gc
-    gc.collect()
-    torch.cuda.empty_cache()
+        wandb.log({
+            "server/eval_accuracy": test_acc,
+            "server/eval_loss": test_loss,
+        }, step=server_round)
 
-    return MetricRecord({"accuracy": test_acc, "loss": test_loss})
+        # Cleanup
+        del model
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        return MetricRecord({"accuracy": test_acc, "loss": test_loss})
+
+    # Medical models (Alpaca-based)
+    elif is_medical_model(model_type):
+        log(INFO, f"Server evaluation: Medical model on {dataset_name}")
+
+        # Load model
+        base_model = medical.get_model(model_type)
+        model = medical.apply_lora(base_model)
+        model.load_state_dict(arrays.to_torch_state_dict(), strict=False)
+        model.to(device)
+
+        # Get server evaluation dataloader (uses holdout fraction)
+        eval_loader = medical.get_server_eval_loader(
+            dataset_name=dataset_name,
+            batch_size=batch_size,
+            model_type=model_type,
+            max_length=max_length,
+        )
+
+        # Evaluate
+        eval_batches = 200  # Cap eval batches to save time
+        eval_loss = medical.evaluate(model, eval_loader, num_batches=eval_batches, device=device)
+        eval_ppl = float(torch.exp(torch.tensor(eval_loss)).item()) if eval_loss > 0 else float("inf")
+
+        wandb.log({
+            "server/eval_loss": eval_loss,
+            "server/eval_ppl": eval_ppl,
+        }, step=server_round)
+
+        # Cleanup
+        del model
+        del base_model
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        return MetricRecord({"loss": eval_loss, "perplexity": eval_ppl})
+
+    # LLM models (general)
+    else:
+        log(INFO, f"Server evaluation: LLM model on {dataset_name}")
+
+        # Load model
+        base_model = llm.get_model(model_type)
+        model = llm.apply_lora(base_model)
+        model.load_state_dict(arrays.to_torch_state_dict(), strict=False)
+        model.to(device)
+
+        # Get server evaluation dataloader (uses holdout fraction)
+        eval_loader = llm.get_server_eval_loader(
+            dataset_name=dataset_name,
+            batch_size=batch_size,
+            model_type=model_type,
+            max_length=max_length,
+        )
+
+        # Evaluate
+        eval_batches = 200  # Cap eval batches to save time
+        eval_loss = llm.evaluate(model, eval_loader, num_batches=eval_batches, device=device)
+        eval_ppl = float(torch.exp(torch.tensor(eval_loss)).item()) if eval_loss > 0 else float("inf")
+
+        wandb.log({
+            "server/eval_loss": eval_loss,
+            "server/eval_ppl": eval_ppl,
+        }, step=server_round)
+
+        # Cleanup
+        del model
+        del base_model
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        return MetricRecord({"loss": eval_loss, "perplexity": eval_ppl})

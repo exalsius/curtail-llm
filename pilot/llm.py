@@ -182,6 +182,52 @@ def get_eval_loader(dataset_name, batch_size, model_type, max_length=512):
     return TokenizedDataLoader(raw_loader, tokenizer, max_length)
 
 
+def get_server_eval_loader(dataset_name, batch_size, model_type, max_length=512, holdout_fraction=0.1):
+    """Get server-side evaluation dataloader using holdout fraction of training data.
+
+    Args:
+        dataset_name: Name of the dataset
+        batch_size: Batch size for evaluation
+        model_type: Model type for tokenizer
+        max_length: Maximum sequence length
+        holdout_fraction: Fraction of training data to use for evaluation (default 10%)
+
+    Returns:
+        TokenizedDataLoader for evaluation
+    """
+    from datasets import load_dataset
+
+    if dataset_name != "HuggingFaceH4/ultrachat_200k":
+        raise ValueError("get_server_eval_loader is specialized for HuggingFaceH4/ultrachat_200k")
+
+    # Load training split
+    train_split, _ = _ultrachat_splits(dataset_name)
+    dataset = load_dataset(dataset_name, split=train_split, streaming=False)
+
+    # Calculate holdout range (last 10% of training data)
+    total_size = len(dataset)
+    holdout_size = int(total_size * holdout_fraction)
+    holdout_start = total_size - holdout_size
+
+    # Select holdout subset
+    holdout_dataset = dataset.select(range(holdout_start, total_size))
+
+    # Wrap as DataLoader with dict-of-lists collation
+    def collate_to_lists(samples):
+        if not samples:
+            return {}
+        keys = samples[0].keys()
+        return {k: [s[k] for s in samples] for k in keys}
+    raw_loader = DataLoader(holdout_dataset, batch_size=batch_size, collate_fn=collate_to_lists)
+
+    # Load tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_type)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    return TokenizedDataLoader(raw_loader, tokenizer, max_length)
+
+
 # ============================================================================
 # Training
 # ============================================================================
@@ -394,19 +440,7 @@ def train_client(msg, config, context):
     # Compute perplexity from training loss
     train_ppl = float(torch.exp(torch.tensor(train_loss)).item()) if train_loss > 0 else float("inf")
 
-    # Quick eval for progress tracking on UltraChat test_sft
-    evalloader = get_eval_loader(
-        dataset_name=dataset_name,
-        batch_size=batch_size,
-        model_type=model_type,
-        max_length=max_length,
-    )
-    # Cap eval to a moderate number of batches
-    eval_batches = min(200, num_batches)
-    val_loss = evaluate(model, evalloader, num_batches=eval_batches, device=device)
-    val_ppl = float(torch.exp(torch.tensor(val_loss)).item()) if val_loss > 0 else float("inf")
-
-    train_metrics = {"train_loss": train_loss, "train_ppl": train_ppl, "val_loss": val_loss, "val_ppl": val_ppl}
+    train_metrics = {"train_loss": train_loss, "train_ppl": train_ppl}
 
     # Extract state dict before cleanup
     model_state = model.state_dict()
