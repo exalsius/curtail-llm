@@ -7,8 +7,8 @@ and metadata for federated learning.
 # Medical Meadow dataset sizes (samples)
 # Based on: https://github.com/kbressem/medAlpaca
 MEDICAL_DATASETS = {
-    # Curated combined dataset (matches medAlpaca's official training composition)
-    "medalpaca/medical_meadow_curated": 229438,  # ~230K samples with subsampling
+    # Curated combined dataset (medAlpaca-inspired, excluding USMLE for testing)
+    "medalpaca/medical_meadow_curated": 226535,  # ~227K samples (excludes USMLE test set)
 
     # Core Medical Meadow datasets
     "medalpaca/medical_meadow_wikidoc": 67704,

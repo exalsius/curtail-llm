@@ -263,13 +263,7 @@ def get_combined_medical_meadow(shuffle_seed: int = 42):
     except Exception as e:
         log(INFO, f"Warning: Could not load MMMLU: {e}")
 
-    # 12. USMLE Self Assessment (2,903 samples) - 100%
-    log(INFO, "Loading medical_meadow_usmle_self_assessment...")
-    try:
-        usmle = load_dataset("medalpaca/medical_meadow_usmle_self_assessment", split="train")
-        datasets_to_combine.append(usmle)
-    except Exception as e:
-        log(INFO, f"Warning: Could not load USMLE: {e}")
+    # Note: USMLE Self Assessment (2,903 samples) is excluded - reserved for final model testing
 
     # Combine all datasets
     log(INFO, f"Concatenating {len(datasets_to_combine)} datasets...")
