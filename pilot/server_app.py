@@ -24,7 +24,7 @@ from pilot.data import ShardManager
 app = ServerApp()
 
 # Time-based round duration (can be made configurable later)
-ROUND_DURATION = 30  # seconds (set to 30 for testing, change to 300 for production)
+ROUND_DURATION = 300  # seconds (set to 30 for testing, change to 300 for production)
 
 
 def is_vision_model(model_type: str) -> bool:
@@ -420,6 +420,17 @@ def main(grid: Grid, context: Context) -> None:
 
     arrays = ArrayRecord(global_model.state_dict())
 
+    # TEMPORARY: Free memory in simulation mode (in production, server/client on separate nodes)
+    # Evaluation will reload model as needed and clean up afterwards
+    log(INFO, "Freeing server model memory for simulation...")
+    del global_model
+    if not is_vision_model(model_type):
+        del base_model
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+    log(INFO, "Server model memory freed")
+
     strategy = PilotAvg(
         dataset_name=dataset_name,
         num_shards=num_shards,
@@ -466,5 +477,11 @@ def global_evaluate(server_round: int, arrays: ArrayRecord, model_type: str, dat
         "server/eval_accuracy": test_acc,
         "server/eval_loss": test_loss,
     }, step=server_round)
+
+    # TEMPORARY: Clean up evaluation model in simulation mode
+    del model
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
 
     return MetricRecord({"accuracy": test_acc, "loss": test_loss})

@@ -408,4 +408,16 @@ def train_client(msg, config, context):
 
     train_metrics = {"train_loss": train_loss, "train_ppl": train_ppl, "val_loss": val_loss, "val_ppl": val_ppl}
 
-    return model.state_dict(), train_metrics, batches_processed
+    # Extract state dict before cleanup
+    model_state = model.state_dict()
+
+    # TEMPORARY: Aggressive cleanup for simulation mode (in production, each client on separate node)
+    # This prevents memory accumulation across rounds in local simulation
+    log(INFO, f"Client {client_id}: Cleaning up model memory...")
+    del model
+    del base_model
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return model_state, train_metrics, batches_processed
