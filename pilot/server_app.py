@@ -161,33 +161,6 @@ class PilotAvg(Strategy):
 
         return arrays, metrics
 
-    def configure_evaluate(
-        self, server_round: int, arrays: ArrayRecord, config: ConfigRecord, grid: Grid
-    ) -> Iterable[Message]:
-        """Configure the next round of federated evaluation."""
-        return []
-        node_ids = list(grid.get_node_ids())
-        log(INFO, "configure_evaluate: Evaluating on all %s nodes", len(node_ids))
-
-        config["server_round"] = server_round
-        record = RecordDict({"arrays": arrays, "config": config})
-        messages = [Message(content=record, message_type=MessageType.EVALUATE, dst_node_id=node_id)
-                    for node_id in node_ids]
-        return messages
-
-    def aggregate_evaluate(
-        self,
-        server_round: int,
-        replies: Iterable[Message],
-    ) -> Optional[MetricRecord]:
-        """Aggregate MetricRecords in the received Messages."""
-        valid_replies, _ = self._check_and_log_replies(replies, is_train=False)
-        metrics = None
-        if valid_replies:
-            reply_contents = [msg.content for msg in valid_replies]
-            metrics = aggregate_metricrecords(reply_contents, self.weighted_by_key)  # can be customized
-        return metrics
-
     def start(
         self,
         grid: Grid,
@@ -225,12 +198,7 @@ class PilotAvg(Strategy):
             log(INFO, "")
             log(INFO, "[ROUND %s/%s]", current_round, num_rounds)
 
-            # -----------------------------------------------------------------
-            # --- TRAINING (CLIENTAPP-SIDE) -----------------------------------
-            # -----------------------------------------------------------------
-
-            # Call strategy to configure training round
-            # Send messages and wait for replies
+            # TRAINING
             train_replies = grid.send_and_receive(
                 messages=self.configure_train(
                     current_round,
@@ -240,12 +208,7 @@ class PilotAvg(Strategy):
                 ),
                 timeout=timeout,
             )
-
-            # Aggregate train
-            agg_arrays, agg_train_metrics = self.aggregate_train(
-                current_round,
-                train_replies,
-            )
+            agg_arrays, agg_train_metrics = self.aggregate_train(current_round, train_replies)
 
             # Log training metrics and append to history
             if agg_arrays is not None:
@@ -255,38 +218,9 @@ class PilotAvg(Strategy):
                 log(INFO, "\t└──> Aggregated MetricRecord: %s", agg_train_metrics)
                 result.train_metrics_clientapp[current_round] = agg_train_metrics
 
-            # -----------------------------------------------------------------
-            # --- EVALUATION (CLIENTAPP-SIDE) ---------------------------------
-            # -----------------------------------------------------------------
+            # Note: No client-side evaluation
 
-            # Call strategy to configure evaluation round
-            # Send messages and wait for replies
-            evaluate_replies = grid.send_and_receive(
-                messages=self.configure_evaluate(
-                    current_round,
-                    arrays,
-                    evaluate_config,
-                    grid,
-                ),
-                timeout=timeout,
-            )
-
-            # Aggregate evaluate
-            agg_evaluate_metrics = self.aggregate_evaluate(
-                current_round,
-                evaluate_replies,
-            )
-
-            # Log training metrics and append to history
-            if agg_evaluate_metrics is not None:
-                log(INFO, "\t└──> Aggregated MetricRecord: %s", agg_evaluate_metrics)
-                result.evaluate_metrics_clientapp[current_round] = agg_evaluate_metrics
-
-            # -----------------------------------------------------------------
-            # --- EVALUATION (SERVERAPP-SIDE) ---------------------------------
-            # -----------------------------------------------------------------
-
-            # Centralized evaluation
+            # EVALUATION
             if evaluate_fn:
                 log(INFO, "Global evaluation")
                 eval_start = time.time()
@@ -295,18 +229,11 @@ class PilotAvg(Strategy):
                 log(INFO, "\t└──> MetricRecord: %s", res)
                 if res is not None:
                     result.evaluate_metrics_serverapp[current_round] = res
-
-                # Log eval timing to W&B
                 if wandb.run:
-                    wandb.log({
-                        "server/eval_time": eval_time,
-                    }, step=current_round)
+                    wandb.log({"server/eval_time": eval_time}, step=current_round)
 
-        log(INFO, "")
-        log(INFO, "Strategy execution finished in %.2fs", time.time() - t_start)
-        log(INFO, "")
-        log(INFO, "Final results:")
-        log(INFO, "")
+        log(INFO, "\nStrategy execution finished in %.2fs\n", time.time() - t_start)
+        log(INFO, "Final results:\n")
         for line in io.StringIO(str(result)):
             log(INFO, "\t%s", line.strip("\n"))
         log(INFO, "")
