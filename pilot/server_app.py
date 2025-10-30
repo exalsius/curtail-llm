@@ -159,6 +159,12 @@ class PilotAvg(Strategy):
 
         return arrays, metrics
 
+    def configure_evaluate(self, server_round, arrays, base_config, grid) -> Iterable[Message]:
+        return []  # not used, server-side eval only
+
+    def aggregate_evaluate(self, server_round, replies) -> tuple[Optional[ArrayRecord], Optional[MetricRecord]]:
+        return None, None  # not used, server-side eval only
+
     def start(
         self,
         grid: Grid,
