@@ -28,11 +28,11 @@ from pilot.data import ShardedDataset, MEDICAL_DATASETS
 # ============================================================================
 
 
-def get_model(model_name: str = "chavinlo/alpaca-native", **kwargs):
+def get_model(model_name: str = "chavinlo/alpaca-13b", **kwargs):
     """Load Alpaca base model for medical fine-tuning.
 
     Args:
-        model_name: HuggingFace model name (default: chavinlo/alpaca-native)
+        model_name: HuggingFace model name (default: chavinlo/alpaca-13b)
         **kwargs: Additional arguments passed to AutoModelForCausalLM.from_pretrained
 
     Returns:
@@ -63,11 +63,12 @@ def apply_lora(model, lora_config: Optional[dict] = None):
         Model with LoRA adapters applied
     """
     if lora_config is None:
-        # Default LoRA config matching medAlpaca's training configuration
+        # Enhanced LoRA config for more computationally expensive training
+        # Significantly increased from original medAlpaca config (r=8, 2 modules)
         lora_config = {
-            "r": 8,
-            "lora_alpha": 16,
-            "target_modules": ["q_proj", "v_proj"],
+            "r": 32,
+            "lora_alpha": 64,
+            "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
             "lora_dropout": 0.1,
             "bias": "none",
             "task_type": "CAUSAL_LM"
@@ -104,7 +105,7 @@ class MedicalDataHandler:
         Args:
             tokenizer: HuggingFace tokenizer
             prompt_template_path: Path to JSON prompt template
-            max_length: Maximum sequence length
+            max_length: Maximum sequence length (default: 512)
         """
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -194,7 +195,7 @@ def _get_tokenizer(model_type: str):
     return tokenizer
 
 
-def _create_data_handler(tokenizer, max_length: int = 256):
+def _create_data_handler(tokenizer, max_length: int = 512):
     """Create medical data handler with prompt template."""
     template_path = os.path.join(
         os.path.dirname(__file__),
@@ -273,7 +274,7 @@ def get_train_loader(
     processed_batches: int,
     batch_size: int,
     model_type: str,
-    max_length: int = 256,
+    max_length: int = 512,
 ):
     """Create training dataloader for curated Medical Meadow dataset.
 
@@ -325,7 +326,7 @@ def get_eval_loader(
     dataset_name: str,
     batch_size: int,
     model_type: str,
-    max_length: int = 256,
+    max_length: int = 512,
 ):
     """Create evaluation dataloader (last 10% of curated dataset).
 
@@ -365,7 +366,7 @@ def get_server_eval_loader(
     dataset_name: str,
     batch_size: int,
     model_type: str,
-    max_length: int = 256,
+    max_length: int = 512,
     holdout_fraction: float = 0.1,
 ):
     """Create server-side evaluation dataloader using holdout fraction.
@@ -544,7 +545,7 @@ def train_client(msg, config, context, cumulative_batches=0):
 
     batch_size: int = context.run_config["batch_size"]
     model_type: str = context.run_config["model_type"]
-    max_length: int = context.run_config.get("max_length", 256)
+    max_length: int = context.run_config.get("max_length", 512)
     weight_decay: float = context.run_config.get("weight_decay", 0.01)
     gradient_accumulation_steps = context.run_config.get("gradient_accumulation_steps", 1)
     lora_config = context.run_config.get("lora_config", None)

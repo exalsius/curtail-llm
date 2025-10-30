@@ -377,7 +377,7 @@ def main(grid: Grid, context: Context) -> None:
 
     # Get max_length from run_config (default depends on model type)
     if is_medical_model(model_type):
-        max_length = context.run_config.get("max_length", 256)  # Medical models use 256
+        max_length = context.run_config.get("max_length", 512)  # Medical models now use 512 (increased from 256)
     else:
         max_length = context.run_config.get("max_length", 512)  # LLM models use 512
 
