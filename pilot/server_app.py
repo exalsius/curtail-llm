@@ -19,6 +19,7 @@ from flwr.serverapp.strategy.strategy_utils import (
 
 import pilot.llm as llm
 import pilot.vision as vision
+import pilot.medical as medical
 from pilot.data import ShardManager
 
 app = ServerApp()
@@ -30,6 +31,11 @@ ROUND_DURATION = 300  # seconds (set to 30 for testing, change to 300 for produc
 def is_vision_model(model_type: str) -> bool:
     """Check if model is a vision model."""
     return model_type in {"simple_cnn", "efficientnet_b0"}
+
+
+def is_medical_model(model_type: str) -> bool:
+    """Check if model is a medical model (Alpaca-based)."""
+    return "alpaca" in model_type.lower() or model_type.startswith("medical")
 
 
 class PilotAvg(Strategy):
@@ -341,6 +347,9 @@ def main(grid: Grid, context: Context) -> None:
     # Load global model
     if is_vision_model(model_type):
         global_model = vision.get_model(model_type)
+    elif is_medical_model(model_type):
+        base_model = medical.get_model(model_type)
+        global_model = medical.apply_lora(base_model)
     else:
         base_model = llm.get_model(model_type)
         global_model = llm.apply_lora(base_model)

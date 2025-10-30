@@ -4,6 +4,9 @@ import itertools
 from datasets import load_dataset
 from torch.utils.data import IterableDataset
 
+# Import medical datasets
+from pilot.medical_datasets import MEDICAL_DATASETS
+
 
 # Known dataset sizes for streaming datasets
 DATASET_SIZES = {
@@ -15,8 +18,10 @@ DATASET_SIZES = {
     "OpenAssistant/oasst2": 161443,
     "tatsu-lab/alpaca": 52002,
     "timdettmers/openassistant-guanaco": 9846,
-    "medalpaca/medical_meadow_wikidoc": 67704,
 }
+
+# Add all Medical Meadow datasets
+DATASET_SIZES.update(MEDICAL_DATASETS)
 
 
 class ShardManager:

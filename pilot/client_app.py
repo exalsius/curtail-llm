@@ -6,6 +6,7 @@ from flwr.common import ConfigRecord, log
 
 import pilot.vision as vision
 import pilot.llm as llm
+import pilot.medical as medical
 
 app = ClientApp()
 
@@ -35,6 +36,9 @@ def train(msg: Message, context: Context):
     elif task_type == "llm":
         # LLM returns a metrics dict for richer reporting
         state_dict, metrics_payload, batches_processed = llm.train_client(msg, config, context)
+    elif task_type == "medical":
+        # Medical returns same format as LLM (metrics dict for richer reporting)
+        state_dict, metrics_payload, batches_processed = medical.train_client(msg, config, context)
     else:
         raise ValueError(f"Unknown task type: {task_type}")
 
