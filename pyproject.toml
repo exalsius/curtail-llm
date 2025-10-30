@@ -68,16 +68,28 @@ log_interval = 10  # Log client metrics every N batches
 #batch_size = 128
 
 # ===== LLM Task (Text Generation with LoRA) =====
-task_type = "llm"  # Optional - auto-detected from model_type
-model_type = "Qwen/Qwen2.5-7B"
-dataset_name = "HuggingFaceH4/ultrachat_200k"
-num_shards = 1
-num_rounds = 50
-lr = 0.0001  # Lower LR for LLMs
+#task_type = "llm"  # Optional - auto-detected from model_type
+#model_type = "Qwen/Qwen2.5-7B"
+#dataset_name = "HuggingFaceH4/ultrachat_200k"
+#num_shards = 1
+#num_rounds = 50
+#lr = 0.0001  # Lower LR for LLMs
+#weight_decay = 0.01
+#batch_size = 4  # Smaller batch for LLMs
+#max_length = 512  # Max sequence length
+#gradient_accumulation_steps = 4  # Effective batch = 4 * 4 = 16
+
+# ===== Medical Task (Medical Q&A with LoRA) =====
+task_type = "medical"
+model_type = "chavinlo/alpaca-native"
+dataset_name = "medalpaca/medical_meadow_curated"
+num_shards = 4
+num_rounds = 10
+lr = 0.0001
 weight_decay = 0.01
-batch_size = 4  # Smaller batch for LLMs
-max_length = 512  # Max sequence length
-gradient_accumulation_steps = 4  # Effective batch = 4 * 4 = 16
+batch_size = 4
+max_length = 256
+gradient_accumulation_steps = 4
 
 
 [tool.flwr.federations]
