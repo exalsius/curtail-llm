@@ -187,8 +187,11 @@ def get_eval_loader(dataset_name, batch_size, model_type, max_length=512):
 # ============================================================================
 
 def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
-          gradient_accumulation_steps=1, log_interval=None, server_round=None):
-    """Train LLM with LoRA using BF16 mixed precision."""
+          gradient_accumulation_steps=1, log_interval=None, server_round=None,
+          round_end_time=None):
+    """Train LLM with LoRA using BF16 mixed precision until `round_end_time`"""
+    import time as time_module
+
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     model.train()
@@ -198,6 +201,12 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
     pbar = tqdm(enumerate(trainloader), total=num_batches, desc="Training")
 
     for batch_idx, batch in pbar:
+        # Update progress bar with time remaining
+        if round_end_time is not None:
+            current_time = time_module.time()
+            remaining = max(0, round_end_time - current_time)
+            pbar.set_description(f"Training (time left: {remaining:.0f}s)")
+
         if batches_processed >= num_batches:
             break
 
@@ -238,6 +247,20 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
         batches_processed += 1
         pbar.set_postfix({"loss": loss.item() * gradient_accumulation_steps})
 
+        # Check time limit AFTER completing batch (including optimizer step if applicable)
+        # This ensures we don't lose accumulated gradients
+        if round_end_time is not None:
+            current_time = time_module.time()
+            if current_time >= round_end_time:
+                log(INFO, f"Round time expired (current: {current_time:.1f} >= end: {round_end_time:.1f}), stopping training")
+                break
+
+    # Flush any remaining accumulated gradients if training stopped mid-accumulation
+    if (batches_processed % gradient_accumulation_steps) != 0:
+        optimizer.step()
+        optimizer.zero_grad()
+        log(INFO, "Flushed accumulated gradients before returning (stopped mid-accumulation)")
+
     avg_loss = total_loss / batches_processed if batches_processed > 0 else 0.0
     return avg_loss, batches_processed
 
@@ -276,6 +299,8 @@ def train_client(msg, config, context):
     Returns:
         tuple: (model_state_dict, train_loss, batches_processed)
     """
+    import time as time_module
+
     model_type = context.run_config["model_type"]
     dataset_name = config["dataset_name"]
     shard_id = config["shard_id"]
@@ -288,7 +313,11 @@ def train_client(msg, config, context):
     gradient_accumulation_steps = context.run_config.get("gradient_accumulation_steps", 1)
     lora_config = context.run_config.get("lora_config", None)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    # Extract round timing
     server_round = config.get("server_round", 0)
+    round_end_time = config.get("round_end_time")
+    round_start_time = time_module.time()  # Track when we actually start training
 
     # W&B configuration for client
     wandb_run_id = config["wandb_run_id"]
@@ -315,12 +344,18 @@ def train_client(msg, config, context):
     if dataset_name != "HuggingFaceH4/ultrachat_200k":
         raise ValueError("LLM train_client is specialized for HuggingFaceH4/ultrachat_200k")
 
-    # Full epoch over this client's shard
+    # Calculate max batches for full shard (but time limit may stop earlier)
     from datasets import load_dataset
     train_split, _ = _ultrachat_splits(dataset_name)
     total_size = len(load_dataset(dataset_name, split=train_split))
     shard_size = total_size // num_shards
     num_batches = max(1, shard_size // batch_size)
+
+    if round_end_time:
+        remaining_time = round_end_time - round_start_time
+        log(INFO, f"Client {client_id}: Round {server_round}, max {num_batches} batches, time budget: {remaining_time:.1f}s")
+    else:
+        log(INFO, f"Client {client_id}: Training for {num_batches} batches (no time limit)")
 
     base_model = get_model(model_type)
     model = apply_lora(base_model, lora_config)
@@ -347,7 +382,14 @@ def train_client(msg, config, context):
         gradient_accumulation_steps=gradient_accumulation_steps,
         log_interval=log_interval,
         server_round=server_round,
+        round_end_time=round_end_time,
     )
+
+    # Log actual training time
+    actual_train_time = time_module.time() - round_start_time
+    log(INFO, f"Client {client_id}: Actual training time: {actual_train_time:.2f}s, processed {batches_processed} batches")
+    if wandb.run:
+        wandb.log({"client/actual_train_time": actual_train_time}, step=server_round)
 
     # Compute perplexity from training loss
     train_ppl = float(torch.exp(torch.tensor(train_loss)).item()) if train_loss > 0 else float("inf")
