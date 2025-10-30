@@ -411,7 +411,7 @@ def get_server_eval_loader(
 
 def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
           gradient_accumulation_steps=1, log_interval=None, server_round=None,
-          round_end_time=None):
+          round_end_time=None, cumulative_batches=0):
     """Train medical model with LoRA using BF16 mixed precision until `round_end_time`.
 
     This function is adapted from pilot/llm.py to work with medical datasets.
@@ -432,9 +432,6 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
             current_time = time_module.time()
             remaining = max(0, round_end_time - current_time)
             pbar.set_description(f"Training (time left: {remaining:.0f}s)")
-
-        if batches_processed >= num_batches:
-            break
 
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
@@ -465,8 +462,8 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
                     "batch_idx": batch_idx,
                 }
 
-                # Use global step that combines server round and batch index
-                global_step = server_round * 10000 + batch_idx if server_round is not None else batch_idx
+                # Use cumulative batches as global step for accurate progress tracking
+                global_step = cumulative_batches + batches_processed
                 wandb.log(log_dict, step=global_step)
 
         total_loss += loss.item() * gradient_accumulation_steps
@@ -524,13 +521,14 @@ def evaluate(model, evalloader, num_batches, device):
 # ============================================================================
 
 
-def train_client(msg, config, context):
+def train_client(msg, config, context, cumulative_batches=0):
     """Federated learning client handler for medical training.
 
     Args:
         msg: Flower message containing model weights
         config: Configuration dict with training parameters
         context: Flower context
+        cumulative_batches: Total batches processed by this client across all rounds
 
     Returns:
         Tuple of (state_dict, metrics_dict, batches_processed)
@@ -620,6 +618,7 @@ def train_client(msg, config, context):
         log_interval=log_interval,
         server_round=server_round,
         round_end_time=round_end_time,
+        cumulative_batches=cumulative_batches,
     )
 
     # Log actual training time

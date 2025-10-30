@@ -146,7 +146,7 @@ def get_test_loader(dataset_name, batch_size):
 # ============================================================================
 
 def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
-          log_interval=None, server_round=None):
+          log_interval=None, server_round=None, cumulative_batches=0):
     """Train vision model for specified number of batches."""
     model.to(device)
     criterion = nn.CrossEntropyLoss().to(device)
@@ -181,8 +181,8 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
                 "batch_idx": batch_idx,
             }
 
-            # Use global step that combines server round and batch index
-            global_step = server_round * 10000 + batch_idx if server_round is not None else batch_idx
+            # Use cumulative batches as global step for accurate progress tracking
+            global_step = cumulative_batches + batches_processed
             wandb.log(log_dict, step=global_step)
 
         if batches_processed >= num_batches:
@@ -216,8 +216,11 @@ def test(model, testloader, device):
 # Federated Learning Client Handler
 # ============================================================================
 
-def train_client(msg, config, context):
+def train_client(msg, config, context, cumulative_batches=0):
     """Handle vision training on federated client.
+
+    Args:
+        cumulative_batches: Total batches processed by this client across all rounds
 
     Returns:
         tuple: (model_state_dict, train_loss, batches_processed)
@@ -284,6 +287,7 @@ def train_client(msg, config, context):
         weight_decay=weight_decay,
         log_interval=log_interval,
         server_round=server_round,
+        cumulative_batches=cumulative_batches,
     )
 
     return model.state_dict(), train_loss, batches_processed
