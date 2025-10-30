@@ -13,9 +13,10 @@ from typing import Optional
 
 import torch
 import wandb
-from datasets import load_dataset
+from datasets import load_dataset, concatenate_datasets
 from flwr.common import log
 from peft import LoraConfig, get_peft_model
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -155,9 +156,8 @@ class MedicalDataHandler:
         )
 
         if add_eos_token and result["input_ids"][-1] != self.tokenizer.eos_token_id:
-            if len(result["input_ids"]) < self.max_length:
-                result["input_ids"].append(self.tokenizer.eos_token_id)
-                result["attention_mask"].append(1)
+            result["input_ids"].append(self.tokenizer.eos_token_id)
+            result["attention_mask"].append(1)
 
         # Add labels for causal LM
         result["labels"] = result["input_ids"].copy()
@@ -182,6 +182,54 @@ class MedicalDataHandler:
 
 
 # ============================================================================
+# Helper Functions
+# ============================================================================
+
+
+def _get_tokenizer(model_type: str):
+    """Load tokenizer with pad_token fallback."""
+    tokenizer = AutoTokenizer.from_pretrained(model_type)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    return tokenizer
+
+
+def _create_data_handler(tokenizer, max_length: int = 256):
+    """Create medical data handler with prompt template."""
+    template_path = os.path.join(
+        os.path.dirname(__file__),
+        "prompt_templates/medalpaca.json"
+    )
+    return MedicalDataHandler(tokenizer, template_path, max_length)
+
+
+def _create_collate_fn(tokenizer):
+    """Create collate function for padding batches."""
+    def collate_fn(batch):
+        input_ids = [torch.tensor(item["input_ids"]) for item in batch]
+        attention_mask = [torch.tensor(item["attention_mask"]) for item in batch]
+        labels = [torch.tensor(item["labels"]) for item in batch]
+
+        # Pad sequences
+        input_ids = torch.nn.utils.rnn.pad_sequence(
+            input_ids, batch_first=True, padding_value=tokenizer.pad_token_id
+        )
+        attention_mask = torch.nn.utils.rnn.pad_sequence(
+            attention_mask, batch_first=True, padding_value=0
+        )
+        labels = torch.nn.utils.rnn.pad_sequence(
+            labels, batch_first=True, padding_value=-100
+        )
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+        }
+    return collate_fn
+
+
+# ============================================================================
 # Data Loading
 # ============================================================================
 
@@ -189,53 +237,26 @@ class MedicalDataHandler:
 def get_combined_medical_meadow(shuffle_seed: int = 42):
     """Load curated Medical Meadow combination with global shuffle.
 
-    Uses only datasets verified to exist on HuggingFace (as of 2025).
     IMPORTANT: After combining, globally shuffled to ensure unbiased train/eval splits.
-
-    Total: ~70K samples (smaller than original medAlpaca due to missing/excluded datasets)
 
     Args:
         shuffle_seed: Random seed for reproducibility
 
     Returns:
-        Combined and globally shuffled HuggingFace Dataset
+        Combined and globally shuffled HuggingFace Dataset (77,192 samples)
     """
-    from datasets import concatenate_datasets, load_dataset
-
     log(INFO, "Loading curated Medical Meadow combination...")
 
-    datasets_to_combine = []
-
-    # 1. Medical Flashcards (~34k)
-    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_medical_flashcards", split="train"))
-
-    # 2. Wikidoc (10k - full dataset, not subsampled)
-    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_wikidoc", split="train"))
-
-    # 3. Wikidoc Patient Information (~6k)
-    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_wikidoc_patient_information", split="train"))
-
-    # 4. Health Advice (~9k)
-    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_health_advice", split="train"))
-
-    # 5. MEDIQA (~2k)
-    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_mediqa", split="train"))
-
-    # 6. CORD-19 - commented out (too large: 821k samples)
-    # cord19 = load_dataset("medalpaca/medical_meadow_cord19", split="train")
-    # cord19 = cord19.shuffle(seed=shuffle_seed).select(range(5000))
-    # datasets_to_combine.append(cord19)
-
-    # 7. MMMLU (~4k)
-    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_mmmlu", split="train"))
-
-    # 8. MedQA (~10k)
-    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_medqa", split="train"))
-
-    # 9. PubMed Causal (~2k)
-    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_pubmed_causal", split="train"))
-
-    # Note: USMLE excluded - dataset is broken on HuggingFace
+    datasets_to_combine = [
+        load_dataset("medalpaca/medical_meadow_medical_flashcards", split="train"),
+        load_dataset("medalpaca/medical_meadow_wikidoc", split="train"),
+        load_dataset("medalpaca/medical_meadow_wikidoc_patient_information", split="train"),
+        load_dataset("medalpaca/medical_meadow_health_advice", split="train"),
+        load_dataset("medalpaca/medical_meadow_mediqa", split="train"),
+        load_dataset("medalpaca/medical_meadow_mmmlu", split="train"),
+        load_dataset("medalpaca/medical_meadow_medqa", split="train"),
+        load_dataset("medalpaca/medical_meadow_pubmed_causal", split="train"),
+    ]
 
     # Combine and shuffle globally for unbiased train/eval splits
     combined = concatenate_datasets(datasets_to_combine)
@@ -254,10 +275,10 @@ def get_train_loader(
     model_type: str,
     max_length: int = 256,
 ):
-    """Create training dataloader for Medical Meadow datasets.
+    """Create training dataloader for curated Medical Meadow dataset.
 
     Args:
-        dataset_name: Name of the Medical Meadow dataset
+        dataset_name: Ignored (always uses curated dataset)
         shard_id: Shard ID for this client
         num_shards: Total number of shards
         processed_batches: Number of batches already processed
@@ -268,35 +289,17 @@ def get_train_loader(
     Returns:
         DataLoader for training
     """
-    if dataset_name not in MEDICAL_DATASETS:
-        raise ValueError(f"Unknown medical dataset: {dataset_name}")
+    log(INFO, "Loading medical training data (curated dataset)")
 
-    log(INFO, f"Loading medical training data: {dataset_name}")
+    tokenizer = _get_tokenizer(model_type)
+    data_handler = _create_data_handler(tokenizer, max_length)
 
-    # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_type)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    # Load prompt template
-    template_path = os.path.join(
-        os.path.dirname(__file__),
-        "prompt_templates/medalpaca.json"
-    )
-    data_handler = MedicalDataHandler(tokenizer, template_path, max_length)
-
-    # Load dataset - check if user wants the curated combined dataset
-    if dataset_name == "medalpaca/medical_meadow_curated":
-        dataset = get_combined_medical_meadow()
-    else:
-        dataset = load_dataset(dataset_name, split="train")
+    # Load curated combined dataset
+    dataset = get_combined_medical_meadow()
 
     # Tokenize dataset
-    def tokenize_fn(example):
-        return data_handler.generate_and_tokenize_prompt(example)
-
     tokenized_dataset = dataset.map(
-        tokenize_fn,
+        data_handler.generate_and_tokenize_prompt,
         remove_columns=dataset.column_names,
     )
 
@@ -307,43 +310,15 @@ def get_train_loader(
         num_shards=num_shards,
         processed_batches=processed_batches,
         batch_size=batch_size,
-        dataset_name=None,  # Already tokenized, no streaming
+        dataset_name=None,
         streaming=False,
     )
 
-    # Create dataloader
-    from torch.utils.data import DataLoader
-
-    def collate_fn(batch):
-        """Collate batch with padding."""
-        input_ids = [torch.tensor(item["input_ids"]) for item in batch]
-        attention_mask = [torch.tensor(item["attention_mask"]) for item in batch]
-        labels = [torch.tensor(item["labels"]) for item in batch]
-
-        # Pad sequences
-        input_ids = torch.nn.utils.rnn.pad_sequence(
-            input_ids, batch_first=True, padding_value=tokenizer.pad_token_id
-        )
-        attention_mask = torch.nn.utils.rnn.pad_sequence(
-            attention_mask, batch_first=True, padding_value=0
-        )
-        labels = torch.nn.utils.rnn.pad_sequence(
-            labels, batch_first=True, padding_value=-100
-        )
-
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "labels": labels,
-        }
-
-    dataloader = DataLoader(
+    return DataLoader(
         sharded_dataset,
         batch_size=batch_size,
-        collate_fn=collate_fn,
+        collate_fn=_create_collate_fn(tokenizer),
     )
-
-    return dataloader
 
 
 def get_eval_loader(
@@ -352,10 +327,10 @@ def get_eval_loader(
     model_type: str,
     max_length: int = 256,
 ):
-    """Create evaluation dataloader for Medical Meadow datasets.
+    """Create evaluation dataloader (last 10% of curated dataset).
 
     Args:
-        dataset_name: Name of the Medical Meadow dataset
+        dataset_name: Ignored (always uses curated dataset)
         batch_size: Batch size
         model_type: Model type (for tokenizer selection)
         max_length: Maximum sequence length
@@ -363,74 +338,27 @@ def get_eval_loader(
     Returns:
         DataLoader for evaluation
     """
-    if dataset_name not in MEDICAL_DATASETS:
-        raise ValueError(f"Unknown medical dataset: {dataset_name}")
+    log(INFO, "Loading medical evaluation data (curated dataset, last 10%)")
 
-    log(INFO, f"Loading medical evaluation data: {dataset_name}")
+    tokenizer = _get_tokenizer(model_type)
+    data_handler = _create_data_handler(tokenizer, max_length)
 
-    # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_type)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    # Load prompt template
-    template_path = os.path.join(
-        os.path.dirname(__file__),
-        "prompt_templates/medalpaca.json"
-    )
-    data_handler = MedicalDataHandler(tokenizer, template_path, max_length)
-
-    # Load dataset - use last 10% for validation
-    if dataset_name == "medalpaca/medical_meadow_curated":
-        dataset = get_combined_medical_meadow()
-    else:
-        dataset = load_dataset(dataset_name, split="train")
+    # Load curated dataset and use last 10% for validation
+    dataset = get_combined_medical_meadow()
     total_size = len(dataset)
-    val_size = max(100, int(0.1 * total_size))  # At least 100 samples
-    val_dataset = dataset.select(range(total_size - val_size, total_size))
+    val_dataset = dataset.select(range(int(0.9 * total_size), total_size))
 
     # Tokenize dataset
-    def tokenize_fn(example):
-        return data_handler.generate_and_tokenize_prompt(example)
-
     tokenized_dataset = val_dataset.map(
-        tokenize_fn,
+        data_handler.generate_and_tokenize_prompt,
         remove_columns=val_dataset.column_names,
     )
 
-    # Create dataloader
-    from torch.utils.data import DataLoader
-
-    def collate_fn(batch):
-        """Collate batch with padding."""
-        input_ids = [torch.tensor(item["input_ids"]) for item in batch]
-        attention_mask = [torch.tensor(item["attention_mask"]) for item in batch]
-        labels = [torch.tensor(item["labels"]) for item in batch]
-
-        # Pad sequences
-        input_ids = torch.nn.utils.rnn.pad_sequence(
-            input_ids, batch_first=True, padding_value=tokenizer.pad_token_id
-        )
-        attention_mask = torch.nn.utils.rnn.pad_sequence(
-            attention_mask, batch_first=True, padding_value=0
-        )
-        labels = torch.nn.utils.rnn.pad_sequence(
-            labels, batch_first=True, padding_value=-100
-        )
-
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "labels": labels,
-        }
-
-    dataloader = DataLoader(
+    return DataLoader(
         tokenized_dataset,
         batch_size=batch_size,
-        collate_fn=collate_fn,
+        collate_fn=_create_collate_fn(tokenizer),
     )
-
-    return dataloader
 
 
 def get_server_eval_loader(
@@ -440,10 +368,10 @@ def get_server_eval_loader(
     max_length: int = 256,
     holdout_fraction: float = 0.1,
 ):
-    """Create server-side evaluation dataloader using holdout fraction of training data.
+    """Create server-side evaluation dataloader using holdout fraction.
 
     Args:
-        dataset_name: Name of the Medical Meadow dataset
+        dataset_name: Ignored (always uses curated dataset)
         batch_size: Batch size for evaluation
         model_type: Model type (for tokenizer selection)
         max_length: Maximum sequence length
@@ -452,79 +380,28 @@ def get_server_eval_loader(
     Returns:
         DataLoader for server evaluation
     """
-    if dataset_name not in MEDICAL_DATASETS:
-        raise ValueError(f"Unknown medical dataset: {dataset_name}")
+    log(INFO, f"Loading medical server evaluation data (curated dataset, holdout: {holdout_fraction*100:.0f}%)")
 
-    log(INFO, f"Loading medical server evaluation data: {dataset_name} (holdout: {holdout_fraction*100:.0f}%)")
+    tokenizer = _get_tokenizer(model_type)
+    data_handler = _create_data_handler(tokenizer, max_length)
 
-    # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_type)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    # Load prompt template
-    template_path = os.path.join(
-        os.path.dirname(__file__),
-        "prompt_templates/medalpaca.json"
-    )
-    data_handler = MedicalDataHandler(tokenizer, template_path, max_length)
-
-    # Load dataset
-    if dataset_name == "medalpaca/medical_meadow_curated":
-        dataset = get_combined_medical_meadow()
-    else:
-        dataset = load_dataset(dataset_name, split="train")
-
-    # Calculate holdout range (last N% of training data)
+    # Load curated dataset and calculate holdout range
+    dataset = get_combined_medical_meadow()
     total_size = len(dataset)
-    holdout_size = int(total_size * holdout_fraction)
-    holdout_start = total_size - holdout_size
-
-    # Select holdout subset
+    holdout_start = int(total_size * (1 - holdout_fraction))
     holdout_dataset = dataset.select(range(holdout_start, total_size))
 
     # Tokenize dataset
-    def tokenize_fn(example):
-        return data_handler.generate_and_tokenize_prompt(example)
-
     tokenized_dataset = holdout_dataset.map(
-        tokenize_fn,
+        data_handler.generate_and_tokenize_prompt,
         remove_columns=holdout_dataset.column_names,
     )
 
-    # Create dataloader
-    from torch.utils.data import DataLoader
-
-    def collate_fn(batch):
-        """Collate batch with padding."""
-        input_ids = [torch.tensor(item["input_ids"]) for item in batch]
-        attention_mask = [torch.tensor(item["attention_mask"]) for item in batch]
-        labels = [torch.tensor(item["labels"]) for item in batch]
-
-        # Pad sequences
-        input_ids = torch.nn.utils.rnn.pad_sequence(
-            input_ids, batch_first=True, padding_value=tokenizer.pad_token_id
-        )
-        attention_mask = torch.nn.utils.rnn.pad_sequence(
-            attention_mask, batch_first=True, padding_value=0
-        )
-        labels = torch.nn.utils.rnn.pad_sequence(
-            labels, batch_first=True, padding_value=-100
-        )
-
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "labels": labels,
-        }
-
-    dataloader = DataLoader(
+    return DataLoader(
         tokenized_dataset,
         batch_size=batch_size,
-        collate_fn=collate_fn,
+        collate_fn=_create_collate_fn(tokenizer),
     )
-
-    return dataloader
 
 
 # ============================================================================
