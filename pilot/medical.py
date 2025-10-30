@@ -187,12 +187,12 @@ class MedicalDataHandler:
 
 
 def get_combined_medical_meadow(shuffle_seed: int = 42):
-    """Load medAlpaca's curated Medical Meadow combination with global shuffle.
+    """Load curated Medical Meadow combination with global shuffle.
 
-    Replicates medAlpaca's dataset composition with subsampling.
+    Uses only datasets verified to exist on HuggingFace (as of 2025).
     IMPORTANT: After combining, globally shuffled to ensure unbiased train/eval splits.
 
-    Total: ~227K samples (USMLE excluded for final testing)
+    Total: ~70K samples (smaller than original medAlpaca due to missing/excluded datasets)
 
     Args:
         shuffle_seed: Random seed for reproducibility
@@ -202,41 +202,40 @@ def get_combined_medical_meadow(shuffle_seed: int = 42):
     """
     from datasets import concatenate_datasets, load_dataset
 
-    log(INFO, "Loading medAlpaca curated Medical Meadow (~227K samples)...")
+    log(INFO, "Loading curated Medical Meadow combination...")
 
     datasets_to_combine = []
 
-    # 1. Medical Flashcards (33,955)
+    # 1. Medical Flashcards (~34k)
     datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_medical_flashcards", split="train"))
 
-    # 2. Wikidoc (10,000 subsampled from 67,704)
-    wikidoc = load_dataset("medalpaca/medical_meadow_wikidoc", split="train")
-    wikidoc = wikidoc.shuffle(seed=shuffle_seed).select(range(min(10000, len(wikidoc))))
-    datasets_to_combine.append(wikidoc)
+    # 2. Wikidoc (10k - full dataset, not subsampled)
+    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_wikidoc", split="train"))
 
-    # 3. Wikidoc Patient Information (5,942)
+    # 3. Wikidoc Patient Information (~6k)
     datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_wikidoc_patient_information", split="train"))
 
-    # 4-6. Stack Exchange Medical Topics
-    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_health_care_magic", split="train"))
-    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_stack_exchange_biology", split="train"))
-    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_stack_exchange_fitness", split="train"))
+    # 4. Health Advice (~9k)
+    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_health_advice", split="train"))
 
-    # 7. MEDIQA (2,208)
+    # 5. MEDIQA (~2k)
     datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_mediqa", split="train"))
 
-    # 8. CORD-19 (50,000 subsampled)
-    cord19 = load_dataset("medalpaca/medical_meadow_cord19", split="train")
-    cord19 = cord19.shuffle(seed=shuffle_seed).select(range(min(50000, len(cord19))))
-    datasets_to_combine.append(cord19)
+    # 6. CORD-19 - commented out (too large: 821k samples)
+    # cord19 = load_dataset("medalpaca/medical_meadow_cord19", split="train")
+    # cord19 = cord19.shuffle(seed=shuffle_seed).select(range(5000))
+    # datasets_to_combine.append(cord19)
 
-    # 9. MMMLU (3,787)
+    # 7. MMMLU (~4k)
     datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_mmmlu", split="train"))
 
-    # 10. MedQA (10,178)
+    # 8. MedQA (~10k)
     datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_medqa", split="train"))
 
-    # Note: USMLE excluded - reserved for final model testing
+    # 9. PubMed Causal (~2k)
+    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_pubmed_causal", split="train"))
+
+    # Note: USMLE excluded - dataset is broken on HuggingFace
 
     # Combine and shuffle globally for unbiased train/eval splits
     combined = concatenate_datasets(datasets_to_combine)

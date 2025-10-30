@@ -5,30 +5,21 @@ from torch.utils.data import IterableDataset
 
 
 # Medical Meadow dataset sizes (samples)
-# Based on: https://github.com/kbressem/medAlpaca
+# Verified from HuggingFace: https://huggingface.co/medalpaca
 MEDICAL_DATASETS = {
-    # Curated combined dataset (medAlpaca-inspired, excluding USMLE for testing)
-    "medalpaca/medical_meadow_curated": 226535,  # ~227K samples (excludes USMLE test set)
+    # Curated combined dataset (manually combined, see medical.py)
+    "medalpaca/medical_meadow_curated": 77192,  # Sum of all active datasets below
 
-    # Core Medical Meadow datasets
-    "medalpaca/medical_meadow_wikidoc": 67704,
+    # Available Medical Meadow datasets (verified 2025)
+    "medalpaca/medical_meadow_wikidoc": 10000,
     "medalpaca/medical_meadow_medical_flashcards": 33955,
     "medalpaca/medical_meadow_medqa": 10178,
-    "medalpaca/medical_meadow_cord19": 13778,
+    # "medalpaca/medical_meadow_cord19": 821000,  # Very large, commented out for now
     "medalpaca/medical_meadow_mmmlu": 3787,
-    "medalpaca/medical_meadow_pubmed": 200000,
-
-    # Stack Exchange medical topics
-    "medalpaca/medical_meadow_health_care_magic": 112165,
-    "medalpaca/medical_meadow_stack_exchange_biology": 27326,
-    "medalpaca/medical_meadow_stack_exchange_fitness": 9326,
-
-    # Specialized medical datasets
+    "medalpaca/medical_meadow_pubmed_causal": 2446,
+    "medalpaca/medical_meadow_health_advice": 8676,
     "medalpaca/medical_meadow_wikidoc_patient_information": 5942,
     "medalpaca/medical_meadow_mediqa": 2208,
-
-    # USMLE (Medical licensing exams) - reserved for testing
-    "medalpaca/medical_meadow_usmle_self_assessment": 2903,
 }
 
 
