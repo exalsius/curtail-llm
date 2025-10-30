@@ -19,8 +19,8 @@ from peft import LoraConfig, get_peft_model
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from pilot.data import ShardedDataset
-from pilot.medical_datasets import MEDICAL_DATASETS, get_dataset_info
+from pilot.data import ShardedDataset, MEDICAL_DATASETS
+
 
 # ============================================================================
 # Model Loading
@@ -187,90 +187,62 @@ class MedicalDataHandler:
 
 
 def get_combined_medical_meadow(shuffle_seed: int = 42):
-    """Load medAlpaca's curated Medical Meadow combination.
+    """Load medAlpaca's curated Medical Meadow combination with global shuffle.
 
-    This function replicates the exact dataset composition used to train
-    the official medAlpaca models, including their subsampling strategy.
+    Replicates medAlpaca's dataset composition with subsampling.
+    IMPORTANT: After combining, globally shuffled to ensure unbiased train/eval splits.
 
-    Total: ~230K samples matching medAlpaca's training composition.
-    Supports sharding for federated learning experiments.
+    Total: ~227K samples (USMLE excluded for final testing)
 
     Args:
-        shuffle_seed: Random seed for subsampling reproducibility
+        shuffle_seed: Random seed for reproducibility
 
     Returns:
-        Combined HuggingFace Dataset ready for tokenization and sharding
+        Combined and globally shuffled HuggingFace Dataset
     """
     from datasets import concatenate_datasets, load_dataset
 
-    log(INFO, "Loading medAlpaca's curated Medical Meadow combination (~230K samples)...")
+    log(INFO, "Loading medAlpaca curated Medical Meadow (~227K samples)...")
 
     datasets_to_combine = []
 
-    # 1. Medical Flashcards (33,955 samples) - 100%
-    log(INFO, "Loading medical_meadow_medical_flashcards...")
-    flashcards = load_dataset("medalpaca/medical_meadow_medical_flashcards", split="train")
-    datasets_to_combine.append(flashcards)
+    # 1. Medical Flashcards (33,955)
+    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_medical_flashcards", split="train"))
 
-    # 2. Wikidoc (10,000 samples) - subsampled from 67,704
-    log(INFO, "Loading medical_meadow_wikidoc (subsampling to 10K)...")
+    # 2. Wikidoc (10,000 subsampled from 67,704)
     wikidoc = load_dataset("medalpaca/medical_meadow_wikidoc", split="train")
     wikidoc = wikidoc.shuffle(seed=shuffle_seed).select(range(min(10000, len(wikidoc))))
     datasets_to_combine.append(wikidoc)
 
-    # 3. Wikidoc Patient Information (5,942 samples) - 100%
-    log(INFO, "Loading medical_meadow_wikidoc_patient_information...")
-    wikidoc_patient = load_dataset("medalpaca/medical_meadow_wikidoc_patient_information", split="train")
-    datasets_to_combine.append(wikidoc_patient)
+    # 3. Wikidoc Patient Information (5,942)
+    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_wikidoc_patient_information", split="train"))
 
-    # 4-8. Stack Exchange Medical Topics (combined ~91K samples) - 100%
-    stack_exchange_datasets = [
-        ("medalpaca/medical_meadow_health_care_magic", "health_care_magic"),
-        ("medalpaca/medical_meadow_stack_exchange_biology", "stack_exchange_biology"),
-        ("medalpaca/medical_meadow_stack_exchange_fitness", "stack_exchange_fitness"),
-    ]
+    # 4-6. Stack Exchange Medical Topics
+    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_health_care_magic", split="train"))
+    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_stack_exchange_biology", split="train"))
+    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_stack_exchange_fitness", split="train"))
 
-    for dataset_name, short_name in stack_exchange_datasets:
-        log(INFO, f"Loading {short_name}...")
-        try:
-            ds = load_dataset(dataset_name, split="train")
-            datasets_to_combine.append(ds)
-        except Exception as e:
-            log(INFO, f"Warning: Could not load {dataset_name}: {e}")
+    # 7. MEDIQA (2,208)
+    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_mediqa", split="train"))
 
-    # 9. MEDIQA (2,208 samples) - 100%
-    log(INFO, "Loading medical_meadow_mediqa...")
-    try:
-        mediqa = load_dataset("medalpaca/medical_meadow_mediqa", split="train")
-        datasets_to_combine.append(mediqa)
-    except Exception as e:
-        log(INFO, f"Warning: Could not load MEDIQA: {e}")
+    # 8. CORD-19 (50,000 subsampled)
+    cord19 = load_dataset("medalpaca/medical_meadow_cord19", split="train")
+    cord19 = cord19.shuffle(seed=shuffle_seed).select(range(min(50000, len(cord19))))
+    datasets_to_combine.append(cord19)
 
-    # 10. CORD-19 (50,000 samples) - subsampled from 1M+
-    log(INFO, "Loading medical_meadow_cord19 (subsampling to 50K)...")
-    try:
-        cord19 = load_dataset("medalpaca/medical_meadow_cord19", split="train")
-        cord19 = cord19.shuffle(seed=shuffle_seed).select(range(min(50000, len(cord19))))
-        datasets_to_combine.append(cord19)
-    except Exception as e:
-        log(INFO, f"Warning: Could not load CORD-19: {e}")
+    # 9. MMMLU (3,787)
+    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_mmmlu", split="train"))
 
-    # 11. MMMLU (3,787 samples) - 100%
-    log(INFO, "Loading medical_meadow_mmmlu...")
-    try:
-        mmmlu = load_dataset("medalpaca/medical_meadow_mmmlu", split="train")
-        datasets_to_combine.append(mmmlu)
-    except Exception as e:
-        log(INFO, f"Warning: Could not load MMMLU: {e}")
+    # 10. MedQA (10,178)
+    datasets_to_combine.append(load_dataset("medalpaca/medical_meadow_medqa", split="train"))
 
-    # Note: USMLE Self Assessment (2,903 samples) is excluded - reserved for final model testing
+    # Note: USMLE excluded - reserved for final model testing
 
-    # Combine all datasets
-    log(INFO, f"Concatenating {len(datasets_to_combine)} datasets...")
+    # Combine and shuffle globally for unbiased train/eval splits
     combined = concatenate_datasets(datasets_to_combine)
+    combined = combined.shuffle(seed=shuffle_seed)
 
-    log(INFO, f"Combined Medical Meadow curated dataset loaded: {len(combined)} samples")
-
+    log(INFO, f"Combined Medical Meadow: {len(combined)} samples (globally shuffled)")
     return combined
 
 
@@ -331,12 +303,13 @@ def get_train_loader(
 
     # Create sharded dataset
     sharded_dataset = ShardedDataset(
-        tokenized_dataset,
+        dataset=tokenized_dataset,
         shard_id=shard_id,
         num_shards=num_shards,
-        initial_position=processed_batches * batch_size,
-        shuffle=True,
-        seed=42,
+        processed_batches=processed_batches,
+        batch_size=batch_size,
+        dataset_name=None,  # Already tokenized, no streaming
+        streaming=False,
     )
 
     # Create dataloader
