@@ -465,9 +465,7 @@ def global_evaluate(
             max_length=max_length,
         )
 
-        # Evaluate
-        eval_batches = 200  # Cap eval batches to save time
-        eval_loss = medical.evaluate(model, eval_loader, num_batches=eval_batches, device=device)
+        eval_loss = medical.evaluate(model, eval_loader, device=device)
         eval_ppl = float(torch.exp(torch.tensor(eval_loss)).item()) if eval_loss > 0 else float("inf")
 
         wandb.log({
@@ -502,9 +500,7 @@ def global_evaluate(
             max_length=max_length,
         )
 
-        # Evaluate
-        eval_batches = 200  # Cap eval batches to save time
-        eval_loss = llm.evaluate(model, eval_loader, num_batches=eval_batches, device=device)
+        eval_loss = llm.evaluate(model, eval_loader, device=device)
         eval_ppl = float(torch.exp(torch.tensor(eval_loss)).item()) if eval_loss > 0 else float("inf")
 
         wandb.log({

@@ -309,15 +309,12 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
 
 
 @torch.no_grad()
-def evaluate(model, evalloader, num_batches, device):
-    """Evaluate model on a capped number of eval batches and return average loss."""
+def evaluate(model, evalloader, device):
     model.eval()
     total_loss = 0.0
     batches = 0
-    for batch_idx, batch in enumerate(tqdm(evalloader, total=num_batches, desc="Evaluating")):
-        if batches >= num_batches:
-            break
 
+    for batch in tqdm(evalloader, desc="Evaluating"):
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"].to(device)
