@@ -469,9 +469,49 @@ def global_evaluate(
         model.load_state_dict(arrays.to_torch_state_dict(), strict=True)
         model.to(device)
 
-        # For now, skip evaluation (will implement proper evaluation later)
-        # TODO: Implement nanochat evaluation with streaming data
-        log(INFO, "Nanochat evaluation not yet implemented, skipping...")
+        # Load tokenizer and create token_bytes tensor
+        from nanochat.tokenizer import get_tokenizer
+        from nanochat.dataloader import tokenizing_distributed_data_loader_with_state
+        from nanochat.loss_eval import evaluate_bpb
+
+        tokenizer = get_tokenizer()
+
+        # Create token_bytes tensor: maps token ID to byte length
+        # Special tokens (BOS, EOS, etc.) get 0 bytes to exclude them from metric
+        vocab_size = tokenizer.get_vocab_size()
+        token_bytes_list = []
+        for token_id in range(vocab_size):
+            try:
+                token_str = tokenizer.decode([token_id])
+                # Exclude special tokens by setting their byte count to 0
+                if token_str in ["<|endoftext|>", "<|bos|>", "<|eos|>"]:
+                    token_bytes_list.append(0)
+                else:
+                    token_bytes_list.append(len(token_str.encode('utf-8')))
+            except:
+                token_bytes_list.append(0)  # Invalid tokens get 0
+
+        token_bytes = torch.tensor(token_bytes_list, dtype=torch.int64, device=device)
+
+        # Create eval dataloader using validation split
+        eval_loader = tokenizing_distributed_data_loader_with_state(
+            B=batch_size,
+            T=max_length,
+            split="val",
+            tokenizer_threads=4,
+            tokenizer_batch_size=128,
+            device=device.type,
+        )
+
+        # Evaluate using bits-per-byte metric
+        eval_steps = 100  # Number of batches to evaluate
+        bpb = evaluate_bpb(model, eval_loader, eval_steps, token_bytes)
+
+        log(INFO, f"Evaluation complete: bits-per-byte = {bpb:.4f}")
+
+        wandb.log({
+            "server/eval_bpb": bpb,
+        }, step=server_round)
 
         # Cleanup
         del model
@@ -479,7 +519,7 @@ def global_evaluate(
         gc.collect()
         torch.cuda.empty_cache()
 
-        return MetricRecord({"loss": 0.0})
+        return MetricRecord({"bits_per_byte": bpb})
 
     # Medical models (Alpaca-based)
     elif is_medical_model(model_type):

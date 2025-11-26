@@ -19,9 +19,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from pilot.nanochat.common import get_dist_info, print0
-from pilot.nanochat.muon import Muon, DistMuon
-from pilot.nanochat.adamw import DistAdamW
+from nanochat.common import get_dist_info, print0
+from nanochat.muon import Muon, DistMuon
+from nanochat.adamw import DistAdamW
 
 @dataclass
 class GPTConfig:
@@ -267,7 +267,7 @@ class GPT(nn.Module):
             logits = self.lm_head(x)
             logits = softcap * torch.tanh(logits / softcap) # logits softcap
             logits = logits.float() # use tf32/fp32 for logits
-            loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-1, reduction=loss_reduction)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1, reduction=loss_reduction)
             return loss
         else:
             # inference mode: compute and return the logits

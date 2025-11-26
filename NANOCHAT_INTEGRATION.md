@@ -8,40 +8,45 @@ The nanochat integration allows you to:
 1. **Vanilla Training**: Train the nanochat d20 or d32 model using standard PyTorch DDP
 2. **Federated Training**: Train the same model using Flower's federated learning framework with sporadic client availability and 5-minute aggregation rounds
 
+## Setup (One-Time)
+
+```bash
+# Download data for tokenizer training and start downloading rest for training
+python -m nanochat.dataset -n 16      # ~1.5GB for tokenizer (blocks until done)
+python -m nanochat.dataset -n 100 &   # ~10GB total dataset (runs in background)
+
+# Train tokenizer on ~4B characters
+cd nanochat/scripts
+python tok_train.py --max_chars=4000000000 --vocab_size=65536
+
+# Verify setup
+python -c "from nanochat.tokenizer import get_tokenizer; print(f'Vocab: {get_tokenizer().get_vocab_size()}')"
+```
+
+**Tokenizer location:** `~/.cache/nanochat/tokenizer/` (shared across all training runs)
+**Custom location:** `export NANOCHAT_BASE_DIR=/path/to/shared/storage`
+
 ## Quick Start
 
 ### Vanilla Training
 
-Run the standard (non-FL) trainer to sanity-check the nanochat stack or benchmark against Flower. This script supports single GPU runs as well as multi-GPU DDP via `torchrun`.
-
 ```bash
 # Single GPU
-python nanochat_train.py --num-steps 50 --batch-size 2 --max-length 512 --output-dir nanochat_runs/test
+python nanochat_train.py --num-steps 50 --batch-size 2 --max-length 512
 
-# Multi-GPU (2 GPUs)
+# Multi-GPU DDP (2 GPUs)
 torchrun --standalone --nproc_per_node=2 nanochat_train.py \
   --num-steps 200 --batch-size 2 --max-length 2048 \
   --wandb-project nanochat_vanilla --run-name d20_ddp
 ```
 
-Before running full training, download a few FineWeb-EDU shards:
+Resume via `--resume-from path/to/checkpoint.pt`. Checkpoints saved to `nanochat_runs/`.
+
+### Federated Training
 
 ```bash
-python -m pilot.nanochat.dataset -n 10 -w 4
-```
-
-The trainer streams data directly from the parquet files and saves checkpoints to `nanochat_runs/` by default. Resume a run via `--resume-from path/to/checkpoint.pt`.
-
-### Federated Training (Current Implementation)
-
-The federated training mode is now implemented and ready to test:
-
-```bash
-# Run federated training with GPU
+# Configure pyproject.toml with task_type="nanochat"
 flwr run . local-simulation-gpu
-
-# Or run with CPU (slower)
-flwr run .
 ```
 
 ### Configuration
@@ -99,31 +104,20 @@ gradient_accumulation_steps = 1  # Set to 8 to simulate 8 GPUs on 1 GPU
 8. **Client**: nanochat task routing and training
 9. **Vanilla Trainer**: `nanochat_train.py` for local/torchrun DDP runs
 
-### 🚧 Pending
-1. **Streaming Data**: Full integration of streaming parquet loader (currently using dummy data)
-2. **Tokenizer Training**: Train custom nanochat tokenizer (currently using GPT-2 fallback)
-3. **Server Evaluation**: Implement proper evaluation on streaming data
+### ✅ Completed
+1. Streaming data with OG parquet loader
+2. Bits-per-byte evaluation metrics
+3. Direct OG nanochat imports (removed pilot/nanochat copy)
 
-### 📝 TODO
-1. Download FineWeb-EDU parquet files:
-   ```bash
-   python -m pilot.nanochat.dataset -n 10 -w 4  # Download first 10 shards
-   ```
+### ℹ️ Data Sharding
 
-2. Train nanochat tokenizer (or use GPT-2 fallback):
-   ```bash
-   # TODO: Add tokenizer training script
-   ```
-
-3. Replace dummy data with streaming parquet loader in `pilot/nanochat_fl.py`
-
-4. Implement server-side evaluation in `pilot/server_app.py`
+**Full dataset on all nodes** - Time-based rounds (5 min) naturally partition data across clients. Simple and efficient for 1-3 nodes. No explicit shard management needed.
 
 ## Testing
 
 ### Test Import
 ```bash
-python -c "import pilot.nanochat.gpt as gpt; print('Success!')"
+python -c "import nanochat.gpt as gpt; print('Success!')"
 ```
 
 ### Test Federated Training (Short Run)

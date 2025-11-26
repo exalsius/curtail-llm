@@ -11,7 +11,9 @@ import wandb
 from flwr.common import log
 from tqdm import tqdm
 
-from pilot.nanochat.gpt import GPT, GPTConfig
+from nanochat.gpt import GPT, GPTConfig
+from nanochat.dataloader import tokenizing_distributed_data_loader_with_state
+from nanochat.tokenizer import get_tokenizer
 
 
 # ============================================================================
@@ -71,58 +73,6 @@ def get_model(model_type="nanochat_d20", max_length=2048):
 
 
 # ============================================================================
-# Simple Data Loading (for initial testing)
-# ============================================================================
-
-class SimpleTextDataLoader:
-    """Simple dataloader for text data during initial testing.
-
-    For full nanochat training, use the streaming parquet loader from
-    pilot.nanochat.dataloader. This simplified version is for getting
-    federated learning working first.
-    """
-
-    def __init__(self, texts, tokenizer, batch_size, max_length, device):
-        self.texts = texts
-        self.tokenizer = tokenizer
-        self.batch_size = batch_size
-        self.max_length = max_length
-        self.device = device
-        self.num_batches = len(texts) // batch_size
-
-    def __iter__(self):
-        bos_token = self.tokenizer.get_bos_token_id()
-
-        for i in range(self.num_batches):
-            batch_texts = self.texts[i * self.batch_size: (i + 1) * self.batch_size]
-
-            # Tokenize batch
-            token_lists = self.tokenizer.encode(batch_texts, prepend=bos_token)
-
-            # Pad/truncate to max_length + 1 (for targets)
-            batch_tokens = []
-            for tokens in token_lists:
-                if len(tokens) > self.max_length + 1:
-                    tokens = tokens[:self.max_length + 1]
-                else:
-                    # Pad with BOS token (simple padding strategy)
-                    tokens = tokens + [bos_token] * (self.max_length + 1 - len(tokens))
-                batch_tokens.append(tokens)
-
-            # Convert to tensor
-            tokens_tensor = torch.tensor(batch_tokens, dtype=torch.long, device=self.device)
-
-            # Split into inputs and targets
-            inputs = tokens_tensor[:, :-1]  # All but last token
-            targets = tokens_tensor[:, 1:]   # All but first token
-
-            yield inputs, targets
-
-    def __len__(self):
-        return self.num_batches
-
-
-# ============================================================================
 # Training
 # ============================================================================
 
@@ -133,7 +83,7 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
 
     Args:
         model: GPT model
-        trainloader: Data loader yielding (inputs, targets)
+        trainloader: Data loader yielding (inputs, targets, loader_state)
         num_batches: Maximum number of batches to process
         lr: Learning rate
         device: Device to train on
@@ -156,9 +106,10 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
     total_loss = 0.0
     batches_processed = 0
 
-    pbar = tqdm(enumerate(trainloader), total=num_batches, desc="Training")
+    # Don't use total parameter since we have time-based stopping
+    pbar = tqdm(trainloader, desc="Training")
 
-    for batch_idx, (inputs, targets) in pbar:
+    for inputs, targets, loader_state in pbar:
         # Update progress bar with time remaining
         if round_end_time is not None:
             current_time = time.time()
@@ -176,7 +127,10 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
         # Backward pass
         loss.backward()
 
-        if (batch_idx + 1) % gradient_accumulation_steps == 0:
+        # Increment counter first
+        batches_processed += 1
+
+        if batches_processed % gradient_accumulation_steps == 0:
             # Gradient clipping
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float('inf'))
 
@@ -184,12 +138,12 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
             optimizer.zero_grad()
 
             # Log periodically to W&B
-            if log_interval and (batch_idx + 1) % log_interval == 0:
+            if log_interval and batches_processed % log_interval == 0:
                 log_dict = {
                     "train_loss": loss.item() * gradient_accumulation_steps,
                     "learning_rate": optimizer.param_groups[0]["lr"],
                     "gradient_norm": grad_norm.item(),
-                    "batch_idx": batch_idx,
+                    "batches_processed": batches_processed,
                 }
 
                 # Use cumulative batches as global step
@@ -197,7 +151,6 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
                 wandb.log(log_dict, step=global_step)
 
         total_loss += loss.item() * gradient_accumulation_steps
-        batches_processed += 1
         pbar.set_postfix({"loss": loss.item() * gradient_accumulation_steps})
 
         # Check time limit AFTER completing batch
@@ -309,34 +262,24 @@ def train_client(msg, config, context, cumulative_batches=0):
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict(), strict=True)
     model.to(device)
 
-    # For now, use dummy data (will integrate streaming parquet loader later)
-    # TODO: Integrate nanochat.dataloader.tokenizing_distributed_data_loader
-    log(INFO, f"Client {client_id}: Using dummy data (streaming loader not yet integrated)")
+    # Use OG streaming dataloader
+    log(INFO, f"Client {client_id}: Using nanochat streaming dataloader")
 
-    # Create dummy dataset for testing
-    # Try to load nanochat tokenizer, fallback to HuggingFace tokenizer
-    try:
-        from pilot.nanochat.tokenizer import get_tokenizer
-        tokenizer = get_tokenizer()
-        log(INFO, f"Client {client_id}: Using nanochat tokenizer")
-    except Exception as e:
-        log(INFO, f"Client {client_id}: Nanochat tokenizer not available ({e}), using GPT-2 tokenizer as fallback")
-        from pilot.nanochat.tokenizer import HuggingFaceTokenizer
-        tokenizer = HuggingFaceTokenizer.from_pretrained("gpt2")
-        log(INFO, f"Client {client_id}: Loaded GPT-2 tokenizer (vocab_size={tokenizer.get_vocab_size()})")
-
-    # Generate some dummy text data
-    dummy_texts = ["This is a test document for nanochat training. " * 100] * (batch_size * 10)
-
-    trainloader = SimpleTextDataLoader(
-        texts=dummy_texts,
-        tokenizer=tokenizer,
-        batch_size=batch_size,
-        max_length=max_length,
-        device=device,
+    # Note: For FL, we use the streaming dataloader without shard-specific state for now
+    # TODO: Integrate shard_id and processed_batches for proper FL data partitioning
+    trainloader = tokenizing_distributed_data_loader_with_state(
+        B=batch_size,
+        T=max_length,
+        split="train",
+        tokenizer_threads=context.run_config.get("tokenizer_threads", 4),
+        tokenizer_batch_size=context.run_config.get("tokenizer_batch_size", 128),
+        device=device.type,
+        resume_state_dict=None,  # TODO: Use shard-specific state for resumption
     )
 
-    num_batches = len(trainloader)
+    # For time-based rounds, we don't have a fixed num_batches
+    # The train() function will stop when time expires
+    num_batches = float('inf')
 
     if round_end_time:
         remaining_time = round_end_time - round_start_time
