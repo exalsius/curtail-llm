@@ -5,10 +5,17 @@ Federated learning framework supporting vision models, LLMs, and nanochat GPT mo
 ## Installation
 
 ```bash
-# Install pilot package
-python -m venv venv
-source venv/bin/activate
-pip install -e ".[dev,test]"
+uv venv
+uv sync
+source .venv/bin/activate
+```
+
+```bash
+# Install Rust / Cargo
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+# Build the rustbpe Tokenizer
+uv run maturin develop --release --manifest-path rustbpe/Cargo.toml
 ```
 
 ## Setup (One-Time for Nanochat)
@@ -18,7 +25,7 @@ pip install -e ".[dev,test]"
 python -m pilot.nanochat.dataset -n 240
 
 # Train tokenizer on ~4B characters
-python scripts/tok_train.py --max_chars=4000000000 --vocab_size=65536
+python -m scripts.tok_train --max_chars=4000000000 --vocab_size=65536
 
 # Verify setup
 python -c "from pilot.nanochat.tokenizer import get_tokenizer; print(f'Vocab: {get_tokenizer().get_vocab_size()}')"
