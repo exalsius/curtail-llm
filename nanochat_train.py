@@ -18,15 +18,15 @@ import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 
-from nanochat.common import (
+from pilot.nanochat.common import (
     DummyWandb,
     compute_cleanup,
     compute_init,
     print0,
     print_banner,
 )
-from nanochat.dataloader import tokenizing_distributed_data_loader_with_state
-from nanochat.gpt import GPT, GPTConfig
+from pilot.nanochat.dataloader import tokenizing_distributed_data_loader_with_state
+from pilot.nanochat.gpt import GPT, GPTConfig
 from pilot.nanochat_fl import get_nanochat_config
 
 

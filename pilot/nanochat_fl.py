@@ -11,9 +11,9 @@ import wandb
 from flwr.common import log
 from tqdm import tqdm
 
-from nanochat.gpt import GPT, GPTConfig
-from nanochat.dataloader import tokenizing_distributed_data_loader_with_state
-from nanochat.tokenizer import get_tokenizer
+from pilot.nanochat.gpt import GPT, GPTConfig
+from pilot.nanochat.dataloader import tokenizing_distributed_data_loader_with_state
+from pilot.nanochat.tokenizer import get_tokenizer
 
 
 # ============================================================================

@@ -3,9 +3,9 @@ from collections import deque
 import torch
 import pyarrow.parquet as pq
 
-from nanochat.common import get_dist_info
-from nanochat.dataset import list_parquet_files
-from nanochat.tokenizer import get_tokenizer
+from pilot.nanochat.common import get_dist_info
+from pilot.nanochat.dataset import list_parquet_files
+from pilot.nanochat.tokenizer import get_tokenizer
 
 def tokenizing_distributed_data_loader_with_state(B, T, split, tokenizer_threads=4, tokenizer_batch_size=128, device="cuda", resume_state_dict=None):
     """

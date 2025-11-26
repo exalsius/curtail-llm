@@ -19,9 +19,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from nanochat.common import get_dist_info, print0
-from nanochat.muon import Muon, DistMuon
-from nanochat.adamw import DistAdamW
+from pilot.nanochat.common import get_dist_info, print0
+from pilot.nanochat.muon import Muon, DistMuon
+from pilot.nanochat.adamw import DistAdamW
 
 @dataclass
 class GPTConfig:

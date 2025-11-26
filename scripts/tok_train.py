@@ -6,9 +6,9 @@ import os
 import time
 import argparse
 import torch
-from nanochat.tokenizer import RustBPETokenizer
-from nanochat.common import get_base_dir
-from nanochat.dataset import parquets_iter_batched
+from pilot.nanochat.tokenizer import RustBPETokenizer
+from pilot.nanochat.common import get_base_dir
+from pilot.nanochat.dataset import parquets_iter_batched
 
 # -----------------------------------------------------------------------------
 # Parse command line arguments
@@ -90,17 +90,10 @@ with open(token_bytes_path, "wb") as f:
     torch.save(token_bytes, f)
 print(f"Saved token_bytes to {token_bytes_path}")
 
-# Log to report
-from nanochat.report import get_report
+# Print token statistics
 token_bytes_nonzero = (token_bytes[token_bytes > 0]).to(dtype=torch.float32)
-get_report().log(section="Tokenizer training", data=[
-    vars(args), # argparse command line arguments
-    {"train_time": train_time},
-    {"num_special_tokens": len(special_set)},
-    {
-        "token_bytes_min": int(token_bytes_nonzero.min().item()),
-        "token_bytes_max": int(token_bytes_nonzero.max().item()),
-        "token_bytes_mean": token_bytes_nonzero.mean().item(),
-        "token_bytes_std": token_bytes_nonzero.std().item(),
-    }
-])
+print(f"Token statistics:")
+print(f"  Training time: {train_time:.2f}s")
+print(f"  Special tokens: {len(special_set)}")
+print(f"  Token bytes - min: {int(token_bytes_nonzero.min().item())}, max: {int(token_bytes_nonzero.max().item())}")
+print(f"  Token bytes - mean: {token_bytes_nonzero.mean().item():.2f}, std: {token_bytes_nonzero.std().item():.2f}")
