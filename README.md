@@ -49,10 +49,10 @@ flwr run . local-simulation-gpu --stream
 flower-superlink --insecure
 
 CUDA_VISIBLE_DEVICES=0 flower-supernode --insecure --superlink 127.0.0.1:9092 \
-    --clientappio-api-address 127.0.0.1:9094 --node-config "partition-id=0"
+    --clientappio-api-address 127.0.0.1:9094 --node-config "client_id=0"
 
 CUDA_VISIBLE_DEVICES=1 flower-supernode --insecure --superlink 127.0.0.1:9092 \
-    --clientappio-api-address 127.0.0.1:9095 --node-config "partition-id=1"
+    --clientappio-api-address 127.0.0.1:9095 --node-config "client_id=1"
 ```
 
 ### Parameter Sweeps

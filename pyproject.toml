@@ -54,8 +54,8 @@ clientapp = "pilot.client_app:app"
 wandb_project = "pilot_flwr"
 # wandb_entity = ""  # Optional wandb username / team name
 log_interval = 10  # Log client metrics every N batches
-# server_debug_port = 5681
-# client_debug_port = 5682
+# debug_port_server = 5681
+# debug_port_client = 5682
 
 # ===== Vision Task (Image Classification) =====
 #task_type = "vision"

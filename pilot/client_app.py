@@ -14,14 +14,14 @@ app = ClientApp()
 @app.train()
 def train(msg: Message, context: Context):
     """Train the model on queue-assigned data."""
-    client_id = context.node_config["partition-id"]
+    client_id = context.node_config["client_id"]
     config: ConfigRecord = msg.content["config"]
 
-    client_debug_port = config.get("client_debug_port", None)
-    if client_debug_port and client_id == 0:
+    debug_port_client = config.get("debug_port_client", None)
+    if debug_port_client and client_id == 0:
         print("[Client 0] Debug mode enabled...")
         import pydevd_pycharm
-        pydevd_pycharm.settrace('localhost', port=client_debug_port, stdout_to_server=True, stderr_to_server=True)
+        pydevd_pycharm.settrace('localhost', port=debug_port_client, stdout_to_server=True, stderr_to_server=True)
 
     # Get cumulative batches from client state (persists across rounds)
     # context.state stores MetricRecord, so we need to extract the value

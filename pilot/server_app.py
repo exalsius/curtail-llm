@@ -46,7 +46,7 @@ class PilotAvg(Strategy):
         self,
         dataset_name: str,
         num_shards: int,
-        client_debug_port: bool,
+        debug_port_client: bool,
         wandb_run_id: Optional[str] = None,
         wandb_project: Optional[str] = None,
         wandb_entity: Optional[str] = None,
@@ -55,7 +55,7 @@ class PilotAvg(Strategy):
         self.dataset_name = dataset_name
         self.num_shards = num_shards
         self.shard_manager = ShardManager(num_shards=num_shards)
-        self.client_debug_port = client_debug_port
+        self.debug_port_client = debug_port_client
         self.weighted_by_key = "batches_processed"
         self.wandb_run_id = wandb_run_id
         self.wandb_project = wandb_project
@@ -87,8 +87,8 @@ class PilotAvg(Strategy):
         base_config["round_end_time"] = round_end_time
         base_config["dataset_name"] = self.dataset_name
         base_config["num_shards"] = self.num_shards
-        if self.client_debug_port:
-            base_config["client_debug_port"] = self.client_debug_port
+        if self.debug_port_client:
+            base_config["debug_port_client"] = self.debug_port_client
 
         # Pass W&B configuration to clients
         base_config["wandb_run_id"] = self.wandb_run_id
@@ -310,11 +310,11 @@ def main(grid: Grid, context: Context) -> None:
     batch_size: int = context.run_config["batch_size"]
     model_type: str = context.run_config["model_type"]
 
-    server_debug_port: int = context.run_config.get("server_debug_port", None)
-    if server_debug_port:
+    debug_port_server: int = context.run_config.get("debug_port_server", None)
+    if debug_port_server:
         print("[Server] Debug mode enabled...")
         import pydevd_pycharm
-        pydevd_pycharm.settrace('localhost', port=server_debug_port, stdout_to_server=True, stderr_to_server=True)
+        pydevd_pycharm.settrace('localhost', port=debug_port_server, stdout_to_server=True, stderr_to_server=True)
 
     # Initialize wandb
     wandb_project: str = context.run_config["wandb_project"]
@@ -372,7 +372,7 @@ def main(grid: Grid, context: Context) -> None:
     strategy = PilotAvg(
         dataset_name=dataset_name,
         num_shards=num_shards,
-        client_debug_port=context.run_config.get("client_debug_port", None),
+        debug_port_client=context.run_config.get("debug_port_client", None),
         wandb_run_id=wandb_run_id,
         wandb_project=wandb_project,
         wandb_entity=wandb_entity,
