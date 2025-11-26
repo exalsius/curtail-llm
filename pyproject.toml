@@ -1,6 +1,6 @@
 [build-system]
-requires = ["maturin>=1.7,<2.0"]
-build-backend = "maturin"
+requires = ["hatchling", "maturin>=1.7,<2.0"]
+build-backend = "hatchling.build"
 
 [project]
 name = "pilot"
@@ -44,6 +44,9 @@ dev = [
     "pre-commit>=4.1.0",
     "ruff>=0.9.7",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["pilot"]
 
 [tool.maturin]
 module-name = "rustbpe"
