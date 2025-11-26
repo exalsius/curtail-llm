@@ -6,7 +6,7 @@ import os
 import time
 import argparse
 import torch
-from pilot.nanochat.tokenizer import RustBPETokenizer
+from pilot.nanochat.tokenizer import HuggingFaceTokenizer
 from pilot.nanochat.common import get_base_dir
 from pilot.nanochat.dataset import parquets_iter_batched
 
@@ -46,7 +46,7 @@ text_iter = text_iterator()
 # -----------------------------------------------------------------------------
 # Train the tokenizer
 t0 = time.time()
-tokenizer = RustBPETokenizer.train_from_iterator(text_iter, args.vocab_size)
+tokenizer = HuggingFaceTokenizer.train_from_iterator(text_iter, args.vocab_size)
 t1 = time.time()
 train_time = t1 - t0
 print(f"Training time: {train_time:.2f}s")
