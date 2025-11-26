@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling", "maturin>=1.7,<2.0"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "pilot"
@@ -37,6 +37,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "maturin>=1.9.4",
+    "pytest>=8.0.0",
     "black>=25.1.0",
     "isort>=6.0.1",
     "pre-commit>=4.1.0",
@@ -47,9 +49,6 @@ test = [
     "pytest-cov>=6.0.0",
 ]
 
-[tool.hatch.build.targets.wheel]
-packages = ["pilot"]
-
 [tool.maturin]
 module-name = "rustbpe"
 bindings = "pyo3"
@@ -57,7 +56,7 @@ python-source = "."
 manifest-path = "rustbpe/Cargo.toml"
 
 [tool.flwr.app]
-publisher = "flwrlabs"
+publisher = "exalsius"
 
 [tool.flwr.app.components]
 serverapp = "pilot.server_app:app"
