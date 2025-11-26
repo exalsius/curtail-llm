@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "maturin>=1.7,<2.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -32,6 +32,7 @@ dependencies = [
     "pyarrow",
     "requests",
     "tokenizers",
+    "tiktoken>=0.11.0",  # tiktoken for efficient inference
 ]
 
 [project.optional-dependencies]
@@ -48,6 +49,12 @@ test = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["pilot"]
+
+[tool.maturin]
+module-name = "rustbpe"
+bindings = "pyo3"
+python-source = "."
+manifest-path = "rustbpe/Cargo.toml"
 
 [tool.flwr.app]
 publisher = "flwrlabs"

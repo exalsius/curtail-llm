@@ -161,7 +161,7 @@ pilot/
 ├── nanochat_fl.py      # Nanochat FL integration
 ├── nanochat/           # Nanochat subpackage
 │   ├── gpt.py          # GPT model
-│   ├── tokenizer.py    # BPE tokenizer (HuggingFace)
+│   ├── tokenizer.py    # BPE tokenizer
 │   ├── dataloader.py   # Streaming loader
 │   ├── dataset.py      # Dataset utilities
 │   ├── common.py       # Utilities
@@ -173,6 +173,7 @@ pilot/
 ├── client_app.py       # Client routing
 └── server_app.py       # Server orchestration
 
+rustbpe/                # Rust tokenizer extension
 scripts/
 └── tok_train.py        # Tokenizer training
 
