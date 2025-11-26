@@ -20,6 +20,7 @@ from flwr.serverapp.strategy.strategy_utils import (
 import pilot.llm as llm
 import pilot.vision as vision
 import pilot.medical as medical
+import pilot.nanochat_fl as nanochat
 from pilot.data import ShardManager
 
 app = ServerApp()
@@ -36,6 +37,11 @@ def is_vision_model(model_type: str) -> bool:
 def is_medical_model(model_type: str) -> bool:
     """Check if model is a medical model (Alpaca-based)."""
     return "alpaca" in model_type.lower() or model_type.startswith("medical")
+
+
+def is_nanochat_model(model_type: str) -> bool:
+    """Check if model is a nanochat model."""
+    return "nanochat" in model_type.lower()
 
 
 class PilotAvg(Strategy):
@@ -349,6 +355,9 @@ def main(grid: Grid, context: Context) -> None:
     # Load global model
     if is_vision_model(model_type):
         global_model = vision.get_model(model_type)
+    elif is_nanochat_model(model_type):
+        max_length = context.run_config.get("max_length", 2048)
+        global_model = nanochat.get_model(model_type, max_length)
     elif is_medical_model(model_type):
         base_model = medical.get_model(model_type)
         global_model = medical.apply_lora(base_model)
@@ -362,7 +371,7 @@ def main(grid: Grid, context: Context) -> None:
     # Evaluation will reload model as needed and clean up afterwards
     log(INFO, "Freeing server model memory for simulation...")
     del global_model
-    if not is_vision_model(model_type):
+    if not is_vision_model(model_type) and not is_nanochat_model(model_type):
         del base_model
     import gc
     gc.collect()
@@ -450,6 +459,27 @@ def global_evaluate(
         torch.cuda.empty_cache()
 
         return MetricRecord({"accuracy": test_acc, "loss": test_loss})
+
+    # Nanochat models
+    elif is_nanochat_model(model_type):
+        log(INFO, f"Server evaluation: Nanochat model on {dataset_name}")
+
+        # Load model
+        model = nanochat.get_model(model_type, max_length)
+        model.load_state_dict(arrays.to_torch_state_dict(), strict=True)
+        model.to(device)
+
+        # For now, skip evaluation (will implement proper evaluation later)
+        # TODO: Implement nanochat evaluation with streaming data
+        log(INFO, "Nanochat evaluation not yet implemented, skipping...")
+
+        # Cleanup
+        del model
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        return MetricRecord({"loss": 0.0})
 
     # Medical models (Alpaca-based)
     elif is_medical_model(model_type):

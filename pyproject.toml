@@ -26,6 +26,14 @@ dependencies = [
     "gradio",
     "sentencepiece",
     # "bitsandbytes",  # only required for 4-bit or 8-bit quantization
+
+    # nanochat dependencies
+    "filelock",
+    "pyarrow",
+    "requests",
+    "tokenizers",
+    # "rustbpe",  # Optional: Rust-based BPE tokenizer (can use HF tokenizers instead)
+    # "tiktoken",  # Optional: tiktoken for efficient inference
 ]
 
 [project.optional-dependencies]
@@ -80,16 +88,36 @@ log_interval = 10  # Log client metrics every N batches
 #gradient_accumulation_steps = 4  # Effective batch = 4 * 4 = 16
 
 # ===== Medical Task (Medical Q&A with LoRA) =====
-task_type = "medical"
-model_type = "chavinlo/alpaca-13b"
-dataset_name = "medalpaca/medical_meadow_curated"
-num_shards = 4
-num_rounds = 10
-lr = 0.0001
+#task_type = "medical"
+#model_type = "chavinlo/alpaca-13b"
+#dataset_name = "medalpaca/medical_meadow_curated"
+#num_shards = 4
+#num_rounds = 10
+#lr = 0.0001
+#weight_decay = 0.01
+#batch_size = 2
+#max_length = 512
+#gradient_accumulation_steps = 8
+
+# ===== Nanochat Task (GPT Pretraining) =====
+# Original nanochat hyperparameters from karpathy/nanochat
+# Baseline: 4h on 8xH100 for 11.2B tokens (560M param model)
+task_type = "nanochat"
+model_type = "nanochat_d20"  # d20 = 20 layers, 560M params
+dataset_name = "karpathy/fineweb-edu-100b-shuffle"
+num_shards = 2  # For federated mode (testing with 2 shards)
+num_rounds = 3  # For testing (short run)
+lr = 0.0006  # nanochat's original learning rate
 weight_decay = 0.01
-batch_size = 2
-max_length = 512
-gradient_accumulation_steps = 8
+batch_size = 2  # Small batch for testing
+max_length = 512  # Reduced for testing (original: 2048)
+gradient_accumulation_steps = 1  # Set to 8 to simulate 8 GPUs on 1 GPU
+# Model architecture (nanochat d20 defaults):
+#   vocab_size = 65536
+#   n_layer = 20 (depth)
+#   n_embd = 1280 (hidden size)
+#   n_head = 10 (attention heads)
+#   n_kv_head = 10 (KV heads for MQA)
 
 
 [tool.flwr.federations]

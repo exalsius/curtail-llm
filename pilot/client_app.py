@@ -7,6 +7,7 @@ from flwr.common import ConfigRecord, log
 import pilot.vision as vision
 import pilot.llm as llm
 import pilot.medical as medical
+import pilot.nanochat_fl as nanochat
 
 app = ClientApp()
 
@@ -14,7 +15,7 @@ app = ClientApp()
 @app.train()
 def train(msg: Message, context: Context):
     """Train the model on queue-assigned data."""
-    client_id = context.node_config["client_id"]
+    client_id = context.node_config["partition-id"]
     config: ConfigRecord = msg.content["config"]
 
     debug_port_client = config.get("debug_port_client", None)
@@ -46,6 +47,9 @@ def train(msg: Message, context: Context):
     elif task_type == "medical":
         # Medical returns same format as LLM (metrics dict for richer reporting)
         state_dict, metrics_payload, batches_processed = medical.train_client(msg, config, context, cumulative_batches)
+    elif task_type == "nanochat":
+        # Nanochat returns same format as LLM (metrics dict for richer reporting)
+        state_dict, metrics_payload, batches_processed = nanochat.train_client(msg, config, context, cumulative_batches)
     else:
         raise ValueError(f"Unknown task type: {task_type}")
 

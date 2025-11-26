@@ -146,8 +146,10 @@ def get_test_loader(dataset_name, batch_size):
 # ============================================================================
 
 def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
-          log_interval=None, server_round=None, cumulative_batches=0):
-    """Train vision model for specified number of batches."""
+          log_interval=None, server_round=None, round_end_time=None, cumulative_batches=0):
+    """Train vision model until round_end_time is reached."""
+    import time as time_module
+
     model.to(device)
     criterion = nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -155,8 +157,15 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
 
     running_loss = 0.0
     batches_processed = 0
+    pbar = tqdm(enumerate(trainloader), total=num_batches, desc="Training")
 
-    for batch_idx, batch in enumerate(tqdm(trainloader, desc="Training", total=num_batches)):
+    for batch_idx, batch in pbar:
+        # Update progress bar with time remaining
+        if round_end_time is not None:
+            current_time = time_module.time()
+            remaining = max(0, round_end_time - current_time)
+            pbar.set_description(f"Training (time left: {remaining:.0f}s)")
+
         images = batch["img"].to(device) if "img" in batch else batch["image"].to(device)
         labels = batch["label"].to(device)
 
@@ -171,6 +180,7 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
 
         running_loss += loss.item()
         batches_processed += 1
+        pbar.set_postfix({"loss": loss.item()})
 
         # Log periodically to W&B
         if log_interval and (batch_idx + 1) % log_interval == 0:
@@ -185,6 +195,14 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
             global_step = cumulative_batches + batches_processed
             wandb.log(log_dict, step=global_step)
 
+        # Check time limit AFTER completing batch (including optimizer step)
+        if round_end_time is not None:
+            current_time = time_module.time()
+            if current_time >= round_end_time:
+                log(INFO, f"Round time expired (current: {current_time:.1f} >= end: {round_end_time:.1f}), stopping training")
+                break
+
+        # Also stop if we've reached the max batches for the shard
         if batches_processed >= num_batches:
             break
 
@@ -225,6 +243,8 @@ def train_client(msg, config, context, cumulative_batches=0):
     Returns:
         tuple: (model_state_dict, train_loss, batches_processed)
     """
+    import time as time_module
+
     model_type = context.run_config["model_type"]
     dataset_name = config["dataset_name"]
     shard_id = config["shard_id"]
@@ -235,6 +255,10 @@ def train_client(msg, config, context, cumulative_batches=0):
     weight_decay = config.get("weight_decay", 0.01)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     server_round = config.get("server_round", 0)
+
+    # Extract round timing
+    round_end_time = config.get("round_end_time")
+    round_start_time = time_module.time()  # Track when we actually start training
 
     # W&B configuration for client
     wandb_run_id = config["wandb_run_id"]
@@ -258,10 +282,23 @@ def train_client(msg, config, context, cumulative_batches=0):
     )
     log(INFO, f"Client {client_id}: W&B initialized with run_id {wandb_run_id}_{client_id}")
 
-    # Determine number of batches
-    import random
-    num_batches = 80 + int(40 * random.random())
-    log(INFO, f"[Client {context.node_config['partition-id']}] Training for {num_batches} batches on device {device}")
+    # Calculate max batches for full shard (but time limit may stop earlier)
+    from datasets import load_dataset
+    if dataset_name in DATASET_SIZES:
+        total_size = DATASET_SIZES[dataset_name]
+    else:
+        # Fall back to loading dataset to get size
+        dataset = load_dataset(dataset_name, split="train")
+        total_size = len(dataset)
+
+    shard_size = total_size // num_shards
+    num_batches = max(1, shard_size // batch_size)
+
+    if round_end_time:
+        remaining_time = round_end_time - round_start_time
+        log(INFO, f"Client {client_id}: Round {server_round}, max {num_batches} batches, time budget: {remaining_time:.1f}s")
+    else:
+        log(INFO, f"Client {client_id}: Training for {num_batches} batches (no time limit)")
 
     # Load model
     model = get_model(model_type)
@@ -287,7 +324,12 @@ def train_client(msg, config, context, cumulative_batches=0):
         weight_decay=weight_decay,
         log_interval=log_interval,
         server_round=server_round,
+        round_end_time=round_end_time,
         cumulative_batches=cumulative_batches,
     )
+
+    # Log actual training time
+    actual_train_time = time_module.time() - round_start_time
+    log(INFO, f"Client {client_id}: Actual training time: {actual_train_time:.2f}s, processed {batches_processed} batches")
 
     return model.state_dict(), train_loss, batches_processed
