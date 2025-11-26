@@ -10,6 +10,7 @@
 python -m venv venv
 source venv/bin/activate
 pip install -e ".[dev,test]"
+pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/rocm7.0 --upgrade --force-reinstall
 ```
 
 
@@ -41,6 +42,17 @@ flwr run . --run-config "num_rounds=50 lr=0.05 batch_size=64" --stream
 
 # Run with GPU support
 flwr run . local-simulation-gpu --stream
+```
+
+## Deployment
+```
+flower-superlink --insecure
+
+CUDA_VISIBLE_DEVICES=0 flower-supernode --insecure --superlink 127.0.0.1:9092 \
+    --clientappio-api-address 127.0.0.1:9094 --node-config "partition-id=0"
+
+CUDA_VISIBLE_DEVICES=1 flower-supernode --insecure --superlink 127.0.0.1:9092 \
+    --clientappio-api-address 127.0.0.1:9095 --node-config "partition-id=1"
 ```
 
 ### Parameter Sweeps

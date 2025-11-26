@@ -15,3 +15,11 @@ wheels/
 wandb/
 offload
 
+
+# Hydra outputs
+outputs/
+multirun/
+.hydra/
+*.log
+*.pid
+*.pids

@@ -621,13 +621,15 @@ def train_client(msg, config, context, cumulative_batches=0):
     # Log actual training time
     actual_train_time = time_module.time() - round_start_time
     log(INFO, f"Medical Client {client_id}: Actual training time: {actual_train_time:.2f}s, processed {batches_processed} batches")
-    if wandb.run:
-        wandb.log({"client/actual_train_time": actual_train_time}, step=server_round)
 
     # Compute perplexity from training loss
     train_ppl = float(torch.exp(torch.tensor(train_loss)).item()) if train_loss > 0 else float("inf")
 
-    train_metrics = {"train_loss": train_loss, "train_ppl": train_ppl}
+    train_metrics = {
+        "train_loss": train_loss,
+        "train_ppl": train_ppl,
+        "actual_train_time": actual_train_time,
+    }
 
     # Extract state dict before cleanup
     model_state = model.state_dict()

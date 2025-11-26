@@ -137,6 +137,8 @@ class PilotAvg(Strategy):
                 log_dict["server/train_loss"] = metrics.get("train_loss", 0)
                 if "train_ppl" in metrics:
                     log_dict["server/train_ppl"] = metrics.get("train_ppl", 0)
+                if "actual_train_time" in metrics:
+                    log_dict["server/actual_train_time"] = metrics.get("actual_train_time", 0)
 
             # Log individual client metrics
             for reply in valid_replies:
@@ -150,6 +152,8 @@ class PilotAvg(Strategy):
                     log_dict[f"{client_prefix}/train_loss"] = client_metrics["train_loss"]
                 if "train_ppl" in client_metrics:
                     log_dict[f"{client_prefix}/train_ppl"] = client_metrics["train_ppl"]
+                if "actual_train_time" in client_metrics:
+                    log_dict[f"{client_prefix}/actual_train_time"] = client_metrics["actual_train_time"]
 
             # Add individual shard states
             for shard_id, batches in enumerate(self.shard_manager.shard_states):
