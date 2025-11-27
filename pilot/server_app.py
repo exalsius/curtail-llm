@@ -17,7 +17,7 @@ from flwr.serverapp.strategy.strategy_utils import (
     validate_message_reply_consistency,
 )
 
-import pilot.nanochat_fl as nanochat
+from pilot.model import get_model
 from pilot.data import ShardManager
 
 app = ServerApp()
@@ -353,9 +353,9 @@ def main(grid: Grid, context: Context) -> None:
     wandb_run_id = wandb.run.id
     wandb_run_group = run_name
 
-    # Load global model (nanochat only)
+    # Load global model
     max_length = context.run_config.get("max_length", 2048)
-    global_model = nanochat.get_model(model_type, max_length)
+    global_model = get_model(model_type, max_length)
 
     arrays = ArrayRecord(global_model.state_dict())
 
@@ -424,10 +424,10 @@ def global_evaluate(
     """
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    log(INFO, f"Server evaluation: Nanochat model on {dataset_name}")
+    log(INFO, f"Server evaluation on {dataset_name}")
 
     # Load model
-    model = nanochat.get_model(model_type, max_length)
+    model = get_model(model_type, max_length)
     model.load_state_dict(arrays.to_torch_state_dict(), strict=True)
     model.to(device)
 
