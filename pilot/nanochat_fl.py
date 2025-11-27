@@ -12,8 +12,7 @@ from flwr.common import log
 from tqdm import tqdm
 
 from pilot.nanochat.gpt import GPT, GPTConfig
-from pilot.nanochat.dataloader import tokenizing_distributed_data_loader_with_state
-from pilot.nanochat.tokenizer import get_tokenizer
+from pilot.data import fl_shard_dataloader
 
 
 # ============================================================================
@@ -76,15 +75,14 @@ def get_model(model_type="nanochat_d20", max_length=2048):
 # Training
 # ============================================================================
 
-def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
+def train(model, trainloader, lr, device, weight_decay=0.01,
           gradient_accumulation_steps=1, log_interval=None, server_round=None,
           round_end_time=None, cumulative_batches=0):
-    """Train nanochat model with time-based rounds.
+    """Train nanochat model with FL shard dataloader (time-based rounds).
 
     Args:
         model: GPT model
-        trainloader: Data loader yielding (inputs, targets, loader_state)
-        num_batches: Maximum number of batches to process
+        trainloader: FL shard dataloader yielding (inputs, targets, shard_id, rows_processed)
         lr: Learning rate
         device: Device to train on
         weight_decay: Weight decay for optimizer
@@ -95,26 +93,28 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
         cumulative_batches: Total batches processed across all rounds
 
     Returns:
-        tuple: (average_loss, batches_processed)
+        tuple: (average_loss, batches_processed, total_rows_processed, shard_updates)
+            - shard_updates: list of (shard_id, rows_processed) tuples
     """
     model.to(device)
-
-    # Use standard AdamW optimizer (simpler than Muon for initial implementation)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     model.train()
     total_loss = 0.0
     batches_processed = 0
+    total_rows_processed = 0
 
-    # Don't use total parameter since we have time-based stopping
+    # Track per-shard progress
+    shard_progress = {}  # {shard_id: rows_processed}
+
     pbar = tqdm(trainloader, desc="Training")
 
-    for inputs, targets, loader_state in pbar:
+    for inputs, targets, shard_id, rows_in_shard in pbar:
         # Update progress bar with time remaining
         if round_end_time is not None:
             current_time = time.time()
             remaining = max(0, round_end_time - current_time)
-            pbar.set_description(f"Training (time left: {remaining:.0f}s)")
+            pbar.set_description(f"Training shard_{shard_id} (time left: {remaining:.0f}s)")
 
         inputs = inputs.to(device)
         targets = targets.to(device)
@@ -127,7 +127,7 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
         # Backward pass
         loss.backward()
 
-        # Increment counter first
+        # Increment counter
         batches_processed += 1
 
         if batches_processed % gradient_accumulation_steps == 0:
@@ -144,64 +144,36 @@ def train(model, trainloader, num_batches, lr, device, weight_decay=0.01,
                     "learning_rate": optimizer.param_groups[0]["lr"],
                     "gradient_norm": grad_norm.item(),
                     "batches_processed": batches_processed,
+                    "current_shard": shard_id,
                 }
 
-                # Use cumulative batches as global step
                 global_step = cumulative_batches + batches_processed
                 wandb.log(log_dict, step=global_step)
 
         total_loss += loss.item() * gradient_accumulation_steps
-        pbar.set_postfix({"loss": loss.item() * gradient_accumulation_steps})
+        pbar.set_postfix({"loss": loss.item() * gradient_accumulation_steps, "shard": shard_id})
 
-        # Check time limit AFTER completing batch
+        # Update shard progress (rows_in_shard is cumulative within current shard)
+        shard_progress[shard_id] = rows_in_shard
+        total_rows_processed = sum(shard_progress.values())
+
+        # Check time limit AFTER completing batch (ensures no partial rows)
         if round_end_time is not None:
             current_time = time.time()
             if current_time >= round_end_time:
-                log(INFO, f"Round time expired (current: {current_time:.1f} >= end: {round_end_time:.1f}), stopping training")
+                log(INFO, f"Round time expired, stopping after batch {batches_processed}")
                 break
 
-        # Stop if we've processed enough batches
-        if batches_processed >= num_batches:
-            break
-
-    # Flush any remaining accumulated gradients
+    # Flush remaining accumulated gradients
     if (batches_processed % gradient_accumulation_steps) != 0:
         optimizer.step()
         optimizer.zero_grad()
         log(INFO, "Flushed accumulated gradients before returning")
 
     avg_loss = total_loss / batches_processed if batches_processed > 0 else 0.0
-    return avg_loss, batches_processed
+    shard_updates = list(shard_progress.items())
 
-
-@torch.no_grad()
-def evaluate(model, evalloader, device):
-    """Evaluate nanochat model.
-
-    Args:
-        model: GPT model
-        evalloader: Data loader yielding (inputs, targets)
-        device: Device to evaluate on
-
-    Returns:
-        float: Average loss
-    """
-    model.eval()
-    total_loss = 0.0
-    batches = 0
-
-    for inputs, targets in tqdm(evalloader, desc="Evaluating"):
-        inputs = inputs.to(device)
-        targets = targets.to(device)
-
-        # Inference in BF16
-        with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
-            loss = model(inputs, targets=targets)
-
-        total_loss += loss.item()
-        batches += 1
-
-    return (total_loss / batches) if batches > 0 else 0.0
+    return avg_loss, batches_processed, total_rows_processed, shard_updates
 
 
 # ============================================================================
@@ -235,6 +207,10 @@ def train_client(msg, config, context, cumulative_batches=0):
     round_end_time = config.get("round_end_time")
     round_start_time = time_module.time()
 
+    # Get shard assignments
+    shard_assignments_raw = config.get("shard_assignments", [])
+    shard_assignments = [(sid, start) for sid, start in shard_assignments_raw]
+
     # W&B configuration
     wandb_run_id = config["wandb_run_id"]
     wandb_project = config["wandb_project"]
@@ -262,36 +238,48 @@ def train_client(msg, config, context, cumulative_batches=0):
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict(), strict=True)
     model.to(device)
 
-    # Use OG streaming dataloader
-    log(INFO, f"Client {client_id}: Using nanochat streaming dataloader")
+    # Check if we have shard assignments
+    if not shard_assignments:
+        log(INFO, f"Client {client_id}: No shard assignments (training complete)")
+        # Return empty metrics
+        train_metrics = {
+            "train_loss": 0.0,
+            "actual_train_time": 0.0,
+            "batches_processed": 0,
+            "total_rows_processed": 0,
+            "shard_updates": [],
+            "client_id": client_id,
+        }
+        model_state = model.state_dict()
+        del model
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        return model_state, train_metrics, 0
 
-    # Note: For FL, we use the streaming dataloader without shard-specific state for now
-    # TODO: Integrate shard_id and processed_batches for proper FL data partitioning
-    trainloader = tokenizing_distributed_data_loader_with_state(
+    log(INFO, f"Client {client_id}: Using FL shard dataloader with {len(shard_assignments)} shards")
+    log(INFO, f"Client {client_id}: Shard assignments: {shard_assignments}")
+
+    # Create FL shard dataloader
+    trainloader = fl_shard_dataloader(
+        shard_assignments=shard_assignments,
         B=batch_size,
         T=max_length,
-        split="train",
         tokenizer_threads=context.run_config.get("tokenizer_threads", 4),
         tokenizer_batch_size=context.run_config.get("tokenizer_batch_size", 128),
         device=device.type,
-        resume_state_dict=None,  # TODO: Use shard-specific state for resumption
     )
-
-    # For time-based rounds, we don't have a fixed num_batches
-    # The train() function will stop when time expires
-    num_batches = float('inf')
 
     if round_end_time:
         remaining_time = round_end_time - round_start_time
-        log(INFO, f"Client {client_id}: Round {server_round}, max {num_batches} batches, time budget: {remaining_time:.1f}s")
+        log(INFO, f"Client {client_id}: Round {server_round}, time budget: {remaining_time:.1f}s")
     else:
-        log(INFO, f"Client {client_id}: Training for {num_batches} batches (no time limit)")
+        log(INFO, f"Client {client_id}: Training without time limit")
 
     # Train
-    train_loss, batches_processed = train(
+    train_loss, batches_processed, total_rows_processed, shard_updates = train(
         model=model,
         trainloader=trainloader,
-        num_batches=num_batches,
         lr=lr,
         device=device,
         weight_decay=weight_decay,
@@ -304,11 +292,17 @@ def train_client(msg, config, context, cumulative_batches=0):
 
     # Log actual training time
     actual_train_time = time_module.time() - round_start_time
-    log(INFO, f"Client {client_id}: Actual training time: {actual_train_time:.2f}s, processed {batches_processed} batches")
+    log(INFO, f"Client {client_id}: Actual training time: {actual_train_time:.2f}s")
+    log(INFO, f"Client {client_id}: Processed {batches_processed} batches, {total_rows_processed} rows")
+    log(INFO, f"Client {client_id}: Shard updates: {shard_updates}")
 
     train_metrics = {
         "train_loss": train_loss,
         "actual_train_time": actual_train_time,
+        "batches_processed": batches_processed,
+        "total_rows_processed": total_rows_processed,
+        "shard_updates": [[sid, rows] for sid, rows in shard_updates],  # Convert to list for serialization
+        "client_id": client_id,
     }
 
     # Extract state dict before cleanup

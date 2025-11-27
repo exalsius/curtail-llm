@@ -64,9 +64,15 @@ class PilotAvg(Strategy):
 
         # Get worker assignments from shard manager
         assignments = self.shard_manager.assign_workers(node_ids)
-        log(INFO, f"Shard states: {self.shard_manager.shard_states}")
-        for node_id, (shard_id, processed_batches) in assignments.items():
-            log(INFO, f"└──> Assigning client {node_id} to shard {shard_id} ({processed_batches} processed batches)")
+        progress = self.shard_manager.get_progress_summary()
+        log(INFO, f"Shard progress: {progress['progress']:.1%} ({progress['num_complete']}/{progress['num_total']} complete)")
+
+        for node_id, shard_list in assignments.items():
+            if shard_list:
+                shard_summary = ", ".join(f"shard_{sid}@{start}" for sid, start in shard_list)
+                log(INFO, f"└──> Client {node_id}: {len(shard_list)} shards [{shard_summary}]")
+            else:
+                log(INFO, f"└──> Client {node_id}: No shards (training complete)")
 
         # Calculate round end time (current time + round duration)
         round_end_time = time.time() + ROUND_DURATION
@@ -87,8 +93,12 @@ class PilotAvg(Strategy):
 
         messages = []
         for node_id in node_ids:
-            shard_id, processed_batches = assignments[node_id]
-            config = ConfigRecord({**base_config, "shard_id": shard_id, "processed_batches": processed_batches})
+            shard_list = assignments[node_id]
+            # Convert list of tuples to lists for serialization
+            config = ConfigRecord({
+                **base_config,
+                "shard_assignments": [[sid, start] for sid, start in shard_list]
+            })
             record = RecordDict({"arrays": arrays, "config": config})
             message = Message(content=record, message_type=MessageType.TRAIN, dst_node_id=node_id)
             messages.append(message)
@@ -104,8 +114,14 @@ class PilotAvg(Strategy):
         # Update shard states from worker results
         for reply in replies:
             metrics: MetricRecord = reply.content["metrics"]
-            self.shard_manager.add(metrics["shard_id"], metrics["batches_processed"])
-        print(f"[Round {server_round}] Final shard states: {self.shard_manager.shard_states}")
+            # shard_updates is a list of [shard_id, rows_processed] pairs
+            shard_updates = [(sid, rows) for sid, rows in metrics["shard_updates"]]
+            self.shard_manager.update(shard_updates)
+
+        progress = self.shard_manager.get_progress_summary()
+        log(INFO, f"[Round {server_round}] Shard progress: {progress['progress']:.1%} "
+                  f"({progress['processed_rows']:,}/{progress['total_rows']:,} rows, "
+                  f"{progress['num_complete']}/{progress['num_total']} complete)")
 
         # Default FedAvg aggregation
         valid_replies, _ = self._check_and_log_replies(replies, is_train=True)
@@ -118,6 +134,9 @@ class PilotAvg(Strategy):
             # Log to wandb
             log_dict = {
                 "server/num_clients": len(valid_replies),
+                "data/progress": progress["progress"],
+                "data/total_rows_processed": progress["processed_rows"],
+                "data/shards_complete": progress["num_complete"],
             }
 
             # Log aggregated server metrics
@@ -133,7 +152,7 @@ class PilotAvg(Strategy):
                 client_metrics: MetricRecord = reply.content["metrics"]
                 client_prefix = f"client_{client_metrics['client_id']}"
                 # Always present
-                log_dict[f"{client_prefix}/shard_id"] = client_metrics["shard_id"]
+                log_dict[f"{client_prefix}/total_rows_processed"] = client_metrics["total_rows_processed"]
                 log_dict[f"{client_prefix}/batches_processed"] = client_metrics["batches_processed"]
                 # Optional metrics, add if available
                 if "train_loss" in client_metrics:
@@ -143,9 +162,9 @@ class PilotAvg(Strategy):
                 if "actual_train_time" in client_metrics:
                     log_dict[f"{client_prefix}/actual_train_time"] = client_metrics["actual_train_time"]
 
-            # Add individual shard states
-            for shard_id, batches in enumerate(self.shard_manager.shard_states):
-                log_dict[f"data/shard_{shard_id}_batches"] = batches
+            # Add individual shard states (processed rows for each shard)
+            for shard_id, state in self.shard_manager.shard_states.items():
+                log_dict[f"data/shard_{shard_id}_rows"] = state["processed_rows"]
 
             wandb.log(log_dict, step=server_round)
 

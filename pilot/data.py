@@ -1,42 +1,15 @@
 """Core data sharding infrastructure for federated learning."""
 
-import itertools
-from torch.utils.data import IterableDataset
+import os
+from collections import deque
+from logging import INFO
 
+import torch
+import pyarrow.parquet as pq
+from flwr.common import log
 
-# Medical Meadow dataset sizes (samples)
-# Verified from HuggingFace: https://huggingface.co/medalpaca
-MEDICAL_DATASETS = {
-    # Curated combined dataset (manually combined, see medical.py)
-    "medalpaca/medical_meadow_curated": 77192,  # Sum of all active datasets below
-
-    # Available Medical Meadow datasets (verified 2025)
-    "medalpaca/medical_meadow_wikidoc": 10000,
-    "medalpaca/medical_meadow_medical_flashcards": 33955,
-    "medalpaca/medical_meadow_medqa": 10178,
-    # "medalpaca/medical_meadow_cord19": 821000,  # Very large, commented out for now
-    "medalpaca/medical_meadow_mmmlu": 3787,
-    "medalpaca/medical_meadow_pubmed_causal": 2446,
-    "medalpaca/medical_meadow_health_advice": 8676,
-    "medalpaca/medical_meadow_wikidoc_patient_information": 5942,
-    "medalpaca/medical_meadow_mediqa": 2208,
-}
-
-
-# Known dataset sizes for streaming datasets
-DATASET_SIZES = {
-    # Vision datasets
-    "uoft-cs/cifar10": 50000,
-    "imagenet-1k": 1281167,
-    # LLM datasets
-    "HuggingFaceH4/ultrachat_200k": 207865,
-    "OpenAssistant/oasst2": 161443,
-    "tatsu-lab/alpaca": 52002,
-    "timdettmers/openassistant-guanaco": 9846,
-}
-
-# Add all Medical Meadow datasets
-DATASET_SIZES.update(MEDICAL_DATASETS)
+from pilot.nanochat.common import get_base_dir
+from pilot.nanochat.tokenizer import get_tokenizer
 
 
 class ShardManager:
@@ -44,160 +17,152 @@ class ShardManager:
 
     def __init__(self, num_shards: int):
         self.num_shards = num_shards
-        self.shard_states = [0 for _ in range(num_shards)]
+        # Initialize shard states by reading parquet files to get total rows
+        base_dir = get_base_dir()
+        data_dir = os.path.join(base_dir, "base_data")
+
+        self.shard_states = {}
+        for shard_id in range(num_shards):
+            filepath = os.path.join(data_dir, f"shard_{shard_id:05d}.parquet")
+            if os.path.exists(filepath):
+                pf = pq.ParquetFile(filepath)
+                total_rows = pf.metadata.num_rows
+            else:
+                # File doesn't exist yet, assume typical size
+                total_rows = 53248  # typical size based on shard_00000.parquet
+
+            self.shard_states[shard_id] = {
+                "total_rows": total_rows,
+                "processed_rows": 0,
+            }
 
     def assign_workers(self, node_ids: list[int]):
-        """Assign workers to shards with least progress."""
-        if len(node_ids) > self.num_shards:
-            raise ValueError(f"Cannot assign {len(node_ids)} workers to {self.num_shards} shards.")
+        """Assign workers to shards with least progress.
 
-        shard_progress = [(shard_id, batches) for shard_id, batches in enumerate(self.shard_states)]
-        shard_progress.sort(key=lambda x: x[1])
+        Distributes incomplete shards evenly among workers, prioritizing
+        in-progress shards first, then unstarted ones.
 
-        assignments = {}
-        for i, node_id in enumerate(node_ids):
-            shard_id, processed_batches = shard_progress[i]
-            assignments[node_id] = (shard_id, processed_batches)
+        Returns:
+            dict: {node_id: [(shard_id, start_row), ...]}
+        """
+        # Get incomplete shards (processed_rows < total_rows)
+        incomplete_shards = [
+            (shard_id, state["processed_rows"])
+            for shard_id, state in self.shard_states.items()
+            if state["processed_rows"] < state["total_rows"]
+        ]
+
+        if not incomplete_shards:
+            # All shards complete, return empty assignments
+            return {node_id: [] for node_id in node_ids}
+
+        # Sort by processed_rows ascending (in-progress first)
+        incomplete_shards.sort(key=lambda x: x[1])
+
+        # Distribute shards evenly among workers (round-robin)
+        assignments = {node_id: [] for node_id in node_ids}
+        for i, (shard_id, start_row) in enumerate(incomplete_shards):
+            node_id = node_ids[i % len(node_ids)]
+            assignments[node_id].append((shard_id, start_row))
 
         return assignments
 
-    def add(self, shard_id: int, processed_batches: int):
-        """Update the state of a shard after training."""
-        self.shard_states[shard_id] += processed_batches
+    def update(self, shard_updates: list[tuple[int, int]]):
+        """Update multiple shard states after training.
+
+        Args:
+            shard_updates: List of (shard_id, rows_processed) tuples
+        """
+        for shard_id, rows_processed in shard_updates:
+            self.shard_states[shard_id]["processed_rows"] += rows_processed
+
+    def is_complete(self) -> bool:
+        """Check if all shards are complete."""
+        return all(
+            state["processed_rows"] >= state["total_rows"]
+            for state in self.shard_states.values()
+        )
+
+    def get_progress_summary(self) -> dict:
+        """Get summary of shard progress."""
+        total_rows = sum(s["total_rows"] for s in self.shard_states.values())
+        processed_rows = sum(s["processed_rows"] for s in self.shard_states.values())
+        return {
+            "total_rows": total_rows,
+            "processed_rows": processed_rows,
+            "progress": processed_rows / total_rows if total_rows > 0 else 0,
+            "num_complete": sum(1 for s in self.shard_states.values() if s["processed_rows"] >= s["total_rows"]),
+            "num_total": self.num_shards,
+        }
 
     def __repr__(self):
-        return f"ShardManager(num_shards={self.num_shards}, states={self.shard_states})"
+        summary = self.get_progress_summary()
+        return (f"ShardManager(num_shards={self.num_shards}, "
+                f"progress={summary['progress']:.1%}, "
+                f"complete={summary['num_complete']}/{summary['num_total']})")
 
 
-class ShardedDataset(IterableDataset):
-    """Unified dataset that handles both indexed and streaming datasets with sharding.
+def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_batch_size=128, device="cuda"):
+    """Process multiple parquet shards sequentially for FL training.
 
-    For streaming datasets, applies a pre-shuffle before sharding and varies the
-    shuffle seed effectively per shard-epoch to provide different samples across
-    epochs while maintaining even coverage over time.
+    Args:
+        shard_assignments: List of (shard_id, start_row) tuples
+        B: Batch size
+        T: Sequence length
+        tokenizer_threads: Tokenizer threads
+        tokenizer_batch_size: Tokenization batch size
+        device: Device type
+
+    Yields:
+        (inputs, targets, shard_id, rows_processed_in_shard)
     """
+    base_dir = get_base_dir()
+    data_dir = os.path.join(base_dir, "base_data")
+    tokenizer = get_tokenizer()
+    bos_token = tokenizer.get_bos_token_id()
+    needed_tokens = B * T + 1
+    token_buffer = deque()
 
-    def __init__(self, dataset, shard_id, num_shards, processed_batches, batch_size,
-                 dataset_name=None, streaming=False, shuffle_seed: int = 0, shuffle_buffer_size: int | None = None):
-        self.dataset = dataset
-        self.shard_id = shard_id
-        self.num_shards = num_shards
-        self.processed_batches = processed_batches
-        self.batch_size = batch_size
-        self.streaming = streaming
-        self.dataset_name = dataset_name
-        self.shuffle_seed = shuffle_seed
+    for shard_id, start_row in shard_assignments:
+        filepath = os.path.join(data_dir, f"shard_{shard_id:05d}.parquet")
+        if not os.path.exists(filepath):
+            log(INFO, f"Shard {shard_id} not found, skipping")
+            continue
 
-        # Default shuffle buffer sizing for streaming datasets (trade off RAM vs. decorrelation)
-        if shuffle_buffer_size is None and streaming:
-            # Heuristic defaults: larger buffers for very large datasets
-            if dataset_name and "imagenet" in dataset_name.lower():
-                shuffle_buffer_size = 100_000
-            else:
-                shuffle_buffer_size = 50_000
-        self.shuffle_buffer_size = shuffle_buffer_size
+        pf = pq.ParquetFile(filepath)
+        total_rows = pf.metadata.num_rows
+        current_row = start_row
+        rows_processed = 0
 
-        # Calculate shard size
-        if streaming:
-            if dataset_name is None:
-                raise ValueError("dataset_name required for streaming datasets")
-            total_size = DATASET_SIZES[dataset_name]
-            self.shard_size = total_size // num_shards
-        else:
-            total_size = len(dataset)
-            shard_size = total_size // num_shards
-            self.start_idx = shard_id * shard_size
-            self.end_idx = self.start_idx + shard_size
-            self.shard_size = self.end_idx - self.start_idx
+        log(INFO, f"Processing shard {shard_id}: rows {start_row}-{total_rows}")
 
-        # Calculate batches per epoch
-        self.batches_per_shard_epoch = self.shard_size // batch_size
+        # Read entire shard, skip rows before start_row
+        table = pf.read()
+        texts = table.column('text').to_pylist()[start_row:]
 
-        # Calculate current position
-        self.current_epoch = processed_batches // self.batches_per_shard_epoch
-        self.batch_in_epoch = processed_batches % self.batches_per_shard_epoch
+        # Process in batches
+        for i in range(0, len(texts), tokenizer_batch_size):
+            batch = texts[i:i+tokenizer_batch_size]
+            token_lists = tokenizer.encode(batch, prepend=bos_token, num_threads=tokenizer_threads)
 
-    def __iter__(self):
-        """Yield samples infinitely, wrapping around the shard."""
-        if self.streaming:
-            yield from self._iter_streaming()
-        else:
-            yield from self._iter_indexed()
+            for tokens in token_lists:
+                token_buffer.extend(tokens)
+                current_row += 1
+                rows_processed += 1
 
-    def _iter_indexed(self):
-        """Iterator for map-style datasets (e.g., CIFAR-10, UltraChat).
+                # Yield batches
+                while len(token_buffer) >= needed_tokens:
+                    tokens_list = [token_buffer.popleft() for _ in range(needed_tokens)]
+                    use_cuda = device == "cuda"
+                    scratch = torch.tensor(tokens_list, dtype=torch.long, pin_memory=use_cuda)
+                    inputs = scratch[:-1].view(B, T).to(device=device, non_blocking=use_cuda)
+                    targets = scratch[1:].view(B, T).to(device=device, non_blocking=use_cuda)
+                    yield inputs, targets, shard_id, rows_processed
 
-        Performs pre-shuffle before sharding for each shard-epoch using a
-        deterministic seed schedule. Resumes within-epoch by skipping
-        already-consumed samples, then reshuffles and continues next epoch.
-        """
-        current_epoch = self.current_epoch
-        samples_to_skip = self.batch_in_epoch * self.batch_size
-
-        while True:
-            # Pre-shuffle globally, then shard interleaved for balance
-            ds = self.dataset.shuffle(seed=self.shuffle_seed + current_epoch)
-            # Interleaved sharding for balance across shards
-            ds = ds.shard(num_shards=self.num_shards, index=self.shard_id, contiguous=False)
-
-            # Determine how many samples to serve this epoch for this shard
-            epoch_shard_len = len(ds)
-            take_count = min(self.shard_size, epoch_shard_len)
-
-            # Resume inside the epoch if needed
-            start = min(samples_to_skip, take_count)
-            if start:
-                samples_to_skip = 0
-
-            for i in range(start, take_count):
-                yield ds[i]
-
-            # Next shard-epoch
-            current_epoch += 1
-
-    def _iter_streaming(self):
-        """Iterator for streaming datasets (ImageNet-1k, UltraChat).
-
-        Applies pre-shuffle then sharding. On each shard-epoch rollover, varies the
-        effective shuffle seed (via epoch or seed offset) to reshuffle before
-        re-iterating, producing different samples per epoch while keeping shard
-        sizes and load balanced.
-        """
-        if self.dataset_name is None:
-            raise ValueError("dataset_name required for streaming datasets")
-
-        samples_to_skip = self.batch_in_epoch * self.batch_size
-        current_epoch = self.current_epoch
-
-        while True:
-            # Pre-shuffle, then shard. Use a stable base seed and vary with epoch
-            # to avoid accumulating transforms and to ensure reproducibility.
-            ds = self.dataset.shuffle(seed=self.shuffle_seed + current_epoch,
-                                      buffer_size=self.shuffle_buffer_size)
-            ds = ds.shard(num_shards=self.num_shards, index=self.shard_id)
-
-            # Inform HF IterableDataset of the epoch for deterministic reshuffle/shard
-            try:
-                ds.set_epoch(current_epoch)
-            except AttributeError:
-                # Older datasets versions may not support set_epoch; safe to ignore
-                pass
-
-            iterator = iter(ds)
-
-            if samples_to_skip > 0:
-                iterator = itertools.islice(iterator, samples_to_skip, None)
-                samples_to_skip = 0
-
-            sample_count = 0
-            for sample in iterator:
-                yield sample
-                sample_count += 1
-                if sample_count >= self.shard_size:
+                if current_row >= total_rows:
                     break
 
-            # Advance to next shard-epoch and reshuffle before next pass
-            current_epoch += 1
-
-    def __len__(self):
-        return self.shard_size
+        # Clear buffer between shards
+        if token_buffer:
+            log(INFO, f"Discarding {len(token_buffer)} tokens from shard {shard_id}")
+            token_buffer.clear()
