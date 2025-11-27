@@ -17,9 +17,6 @@ from flwr.serverapp.strategy.strategy_utils import (
     validate_message_reply_consistency,
 )
 
-import pilot.llm as llm
-import pilot.vision as vision
-import pilot.medical as medical
 import pilot.nanochat_fl as nanochat
 from pilot.data import ShardManager
 
@@ -27,21 +24,6 @@ app = ServerApp()
 
 # Time-based round duration (can be made configurable later)
 ROUND_DURATION = 300  # seconds (set to 30 for testing, change to 300 for production)
-
-
-def is_vision_model(model_type: str) -> bool:
-    """Check if model is a vision model."""
-    return model_type in {"simple_cnn", "efficientnet_b0"}
-
-
-def is_medical_model(model_type: str) -> bool:
-    """Check if model is a medical model (Alpaca-based)."""
-    return "alpaca" in model_type.lower() or model_type.startswith("medical")
-
-
-def is_nanochat_model(model_type: str) -> bool:
-    """Check if model is a nanochat model."""
-    return "nanochat" in model_type.lower()
 
 
 class PilotAvg(Strategy):
@@ -352,18 +334,9 @@ def main(grid: Grid, context: Context) -> None:
     wandb_run_id = wandb.run.id
     wandb_run_group = run_name
 
-    # Load global model
-    if is_vision_model(model_type):
-        global_model = vision.get_model(model_type)
-    elif is_nanochat_model(model_type):
-        max_length = context.run_config.get("max_length", 2048)
-        global_model = nanochat.get_model(model_type, max_length)
-    elif is_medical_model(model_type):
-        base_model = medical.get_model(model_type)
-        global_model = medical.apply_lora(base_model)
-    else:
-        base_model = llm.get_model(model_type)
-        global_model = llm.apply_lora(base_model)
+    # Load global model (nanochat only)
+    max_length = context.run_config.get("max_length", 2048)
+    global_model = nanochat.get_model(model_type, max_length)
 
     arrays = ArrayRecord(global_model.state_dict())
 
@@ -371,8 +344,6 @@ def main(grid: Grid, context: Context) -> None:
     # Evaluation will reload model as needed and clean up afterwards
     log(INFO, "Freeing server model memory for simulation...")
     del global_model
-    if not is_vision_model(model_type) and not is_nanochat_model(model_type):
-        del base_model
     import gc
     gc.collect()
     torch.cuda.empty_cache()
@@ -388,11 +359,8 @@ def main(grid: Grid, context: Context) -> None:
         wandb_run_group=wandb_run_group,
     )
 
-    # Get max_length from run_config (default depends on model type)
-    if is_medical_model(model_type):
-        max_length = context.run_config.get("max_length", 512)  # Medical models now use 512 (increased from 256)
-    else:
-        max_length = context.run_config.get("max_length", 512)  # LLM models use 512
+    # Get max_length from run_config
+    max_length = context.run_config.get("max_length", 2048)
 
     result = strategy.start(
         grid=grid,
@@ -420,173 +388,78 @@ def global_evaluate(
     model_type: str,
     dataset_name: str,
     batch_size: int = 32,
-    max_length: int = 512,
+    max_length: int = 2048,
 ) -> MetricRecord:
-    """Evaluate model on holdout test data.
+    """Evaluate nanochat model on validation data.
 
     Args:
         server_round: Current training round
         arrays: Model weights to evaluate
-        model_type: Type of model (vision, LLM, or medical)
+        model_type: Type of model (nanochat)
         dataset_name: Name of the dataset
         batch_size: Batch size for evaluation
-        max_length: Maximum sequence length (for LLM/medical models)
+        max_length: Maximum sequence length
 
     Returns:
-        MetricRecord with evaluation metrics
+        MetricRecord with bits-per-byte metric
     """
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    # Vision models
-    if is_vision_model(model_type):
-        log(INFO, f"Server evaluation: Vision model on {dataset_name}")
-        model = vision.get_model(model_type)
-        model.load_state_dict(arrays.to_torch_state_dict())
-        model.to(device)
+    log(INFO, f"Server evaluation: Nanochat model on {dataset_name}")
 
-        test_dataloader = vision.get_test_loader(dataset_name=dataset_name, batch_size=batch_size)
-        test_loss, test_acc = vision.test(model, test_dataloader, device)
+    # Load model
+    model = nanochat.get_model(model_type, max_length)
+    model.load_state_dict(arrays.to_torch_state_dict(), strict=True)
+    model.to(device)
 
-        wandb.log({
-            "server/eval_accuracy": test_acc,
-            "server/eval_loss": test_loss,
-        }, step=server_round)
+    # Load tokenizer and create token_bytes tensor
+    from pilot.nanochat.tokenizer import get_tokenizer
+    from pilot.nanochat.dataloader import tokenizing_distributed_data_loader_with_state
+    from pilot.nanochat.loss_eval import evaluate_bpb
 
-        # Cleanup
-        del model
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache()
+    tokenizer = get_tokenizer()
 
-        return MetricRecord({"accuracy": test_acc, "loss": test_loss})
+    # Create token_bytes tensor: maps token ID to byte length
+    # Special tokens (BOS, EOS, etc.) get 0 bytes to exclude them from metric
+    vocab_size = tokenizer.get_vocab_size()
+    token_bytes_list = []
+    for token_id in range(vocab_size):
+        try:
+            token_str = tokenizer.decode([token_id])
+            # Exclude special tokens by setting their byte count to 0
+            if token_str in ["<|endoftext|>", "<|bos|>", "<|eos|>"]:
+                token_bytes_list.append(0)
+            else:
+                token_bytes_list.append(len(token_str.encode('utf-8')))
+        except:
+            token_bytes_list.append(0)  # Invalid tokens get 0
 
-    # Nanochat models
-    elif is_nanochat_model(model_type):
-        log(INFO, f"Server evaluation: Nanochat model on {dataset_name}")
+    token_bytes = torch.tensor(token_bytes_list, dtype=torch.int64, device=device)
 
-        # Load model
-        model = nanochat.get_model(model_type, max_length)
-        model.load_state_dict(arrays.to_torch_state_dict(), strict=True)
-        model.to(device)
+    # Create eval dataloader using validation split
+    eval_loader = tokenizing_distributed_data_loader_with_state(
+        B=batch_size,
+        T=max_length,
+        split="val",
+        tokenizer_threads=4,
+        tokenizer_batch_size=128,
+        device=device.type,
+    )
 
-        # Load tokenizer and create token_bytes tensor
-        from pilot.nanochat.tokenizer import get_tokenizer
-        from pilot.nanochat.dataloader import tokenizing_distributed_data_loader_with_state
-        from pilot.nanochat.loss_eval import evaluate_bpb
+    # Evaluate using bits-per-byte metric
+    eval_steps = 100  # Number of batches to evaluate
+    bpb = evaluate_bpb(model, eval_loader, eval_steps, token_bytes)
 
-        tokenizer = get_tokenizer()
+    log(INFO, f"Evaluation complete: bits-per-byte = {bpb:.4f}")
 
-        # Create token_bytes tensor: maps token ID to byte length
-        # Special tokens (BOS, EOS, etc.) get 0 bytes to exclude them from metric
-        vocab_size = tokenizer.get_vocab_size()
-        token_bytes_list = []
-        for token_id in range(vocab_size):
-            try:
-                token_str = tokenizer.decode([token_id])
-                # Exclude special tokens by setting their byte count to 0
-                if token_str in ["<|endoftext|>", "<|bos|>", "<|eos|>"]:
-                    token_bytes_list.append(0)
-                else:
-                    token_bytes_list.append(len(token_str.encode('utf-8')))
-            except:
-                token_bytes_list.append(0)  # Invalid tokens get 0
+    wandb.log({
+        "server/eval_bpb": bpb,
+    }, step=server_round)
 
-        token_bytes = torch.tensor(token_bytes_list, dtype=torch.int64, device=device)
+    # Cleanup
+    del model
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
 
-        # Create eval dataloader using validation split
-        eval_loader = tokenizing_distributed_data_loader_with_state(
-            B=batch_size,
-            T=max_length,
-            split="val",
-            tokenizer_threads=4,
-            tokenizer_batch_size=128,
-            device=device.type,
-        )
-
-        # Evaluate using bits-per-byte metric
-        eval_steps = 100  # Number of batches to evaluate
-        bpb = evaluate_bpb(model, eval_loader, eval_steps, token_bytes)
-
-        log(INFO, f"Evaluation complete: bits-per-byte = {bpb:.4f}")
-
-        wandb.log({
-            "server/eval_bpb": bpb,
-        }, step=server_round)
-
-        # Cleanup
-        del model
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        return MetricRecord({"bits_per_byte": bpb})
-
-    # Medical models (Alpaca-based)
-    elif is_medical_model(model_type):
-        log(INFO, f"Server evaluation: Medical model on {dataset_name}")
-
-        # Load model
-        base_model = medical.get_model(model_type)
-        model = medical.apply_lora(base_model)
-        model.load_state_dict(arrays.to_torch_state_dict(), strict=False)
-        model.to(device)
-
-        # Get server evaluation dataloader (uses holdout fraction)
-        eval_loader = medical.get_server_eval_loader(
-            dataset_name=dataset_name,
-            batch_size=batch_size,
-            model_type=model_type,
-            max_length=max_length,
-        )
-
-        eval_loss = medical.evaluate(model, eval_loader, device=device)
-        eval_ppl = float(torch.exp(torch.tensor(eval_loss)).item()) if eval_loss > 0 else float("inf")
-
-        wandb.log({
-            "server/eval_loss": eval_loss,
-            "server/eval_ppl": eval_ppl,
-        }, step=server_round)
-
-        # Cleanup
-        del model
-        del base_model
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        return MetricRecord({"loss": eval_loss, "perplexity": eval_ppl})
-
-    # LLM models (general)
-    else:
-        log(INFO, f"Server evaluation: LLM model on {dataset_name}")
-
-        # Load model
-        base_model = llm.get_model(model_type)
-        model = llm.apply_lora(base_model)
-        model.load_state_dict(arrays.to_torch_state_dict(), strict=False)
-        model.to(device)
-
-        # Get server evaluation dataloader (uses holdout fraction)
-        eval_loader = llm.get_server_eval_loader(
-            dataset_name=dataset_name,
-            batch_size=batch_size,
-            model_type=model_type,
-            max_length=max_length,
-        )
-
-        eval_loss = llm.evaluate(model, eval_loader, device=device)
-        eval_ppl = float(torch.exp(torch.tensor(eval_loss)).item()) if eval_loss > 0 else float("inf")
-
-        wandb.log({
-            "server/eval_loss": eval_loss,
-            "server/eval_ppl": eval_ppl,
-        }, step=server_round)
-
-        # Cleanup
-        del model
-        del base_model
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        return MetricRecord({"loss": eval_loss, "perplexity": eval_ppl})
+    return MetricRecord({"bits_per_byte": bpb})

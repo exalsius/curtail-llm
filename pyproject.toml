@@ -11,23 +11,17 @@ dependencies = [
     "ray>=2.0.0",
     "pandas>=2.1.0",
     "torch==2.8.0",
-    "torchvision==0.23.0",
     "tqdm",
     "transformers",
-    "peft",
-    "trl",
     "wandb",
 
-    # medAlpaca dependencies
+    # Utilities
     "accelerate",
     "appdirs",
     "datasets",
     "fire",
-    "gradio",
-    "sentencepiece",
-    # "bitsandbytes",  # only required for 4-bit or 8-bit quantization
 
-    # nanochat dependencies
+    # Nanochat dependencies
     "filelock",
     "pyarrow",
     "requests",
@@ -68,41 +62,7 @@ log_interval = 10  # Log client metrics every N batches
 # debug_port_server = 5681
 # debug_port_client = 5682
 
-# ===== Vision Task (Image Classification) =====
-#task_type = "vision"
-#model_type = "efficientnet_b0"
-#dataset_name = "uoft-cs/cifar10"
-#num_shards = 5
-#num_rounds = 100
-#lr = 0.001
-#weight_decay = 0.01
-#batch_size = 128
-
-# ===== LLM Task (Text Generation with LoRA) =====
-#task_type = "llm"  # Optional - auto-detected from model_type
-#model_type = "Qwen/Qwen2.5-7B"
-#dataset_name = "HuggingFaceH4/ultrachat_200k"
-#num_shards = 1
-#num_rounds = 50
-#lr = 0.0001  # Lower LR for LLMs
-#weight_decay = 0.01
-#batch_size = 4  # Smaller batch for LLMs
-#max_length = 512  # Max sequence length
-#gradient_accumulation_steps = 4  # Effective batch = 4 * 4 = 16
-
-# ===== Medical Task (Medical Q&A with LoRA) =====
-#task_type = "medical"
-#model_type = "chavinlo/alpaca-13b"
-#dataset_name = "medalpaca/medical_meadow_curated"
-#num_shards = 4
-#num_rounds = 10
-#lr = 0.0001
-#weight_decay = 0.01
-#batch_size = 2
-#max_length = 512
-#gradient_accumulation_steps = 8
-
-# ===== Nanochat Task (GPT Pretraining) =====
+# ===== Nanochat Configuration (GPT Pretraining) =====
 # Original nanochat hyperparameters from karpathy/nanochat
 # Baseline: 4h on 8xH100 for 11.2B tokens (560M param model)
 task_type = "nanochat"
