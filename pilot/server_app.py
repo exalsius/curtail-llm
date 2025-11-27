@@ -432,9 +432,9 @@ def global_evaluate(
     model.to(device)
 
     # Load tokenizer and create token_bytes tensor
-    from pilot.nanochat.tokenizer import get_tokenizer
-    from pilot.nanochat.dataloader import tokenizing_distributed_data_loader_with_state
-    from pilot.nanochat.loss_eval import evaluate_bpb
+    from nanochat.tokenizer import get_tokenizer
+    from nanochat.dataloader import tokenizing_distributed_data_loader_with_state
+    from nanochat.loss_eval import evaluate_bpb
 
     tokenizer = get_tokenizer()
 

@@ -1,4 +1,4 @@
-from pilot.nanochat.gpt import GPT, GPTConfig
+from nanochat.gpt import GPT, GPTConfig
 
 
 def get_model(model_type, max_length):

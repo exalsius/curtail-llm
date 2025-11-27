@@ -38,13 +38,13 @@ Before running federated training, you need to prepare the tokenizer:
 
 ```bash
 # 1. Download dataset for tokenizer training (~22GB of FineWeb-EDU data)
-python -m pilot.nanochat.dataset -n 240
+python -m nanochat.dataset -n 240
 
 # 2. Train BPE tokenizer on ~4B characters (creates 65K vocab)
 python -m scripts.tok_train --max_chars=4000000000 --vocab_size=65536
 
 # 3. Verify tokenizer is ready
-python -c "from pilot.nanochat.tokenizer import get_tokenizer; print(f'Vocab size: {get_tokenizer().get_vocab_size()}')"
+python -c "from nanochat.tokenizer import get_tokenizer; print(f'Vocab size: {get_tokenizer().get_vocab_size()}')"
 ```
 
 **Tokenizer Storage:**

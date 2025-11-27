@@ -40,7 +40,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["pilot"]
+packages = ["pilot", "nanochat"]
 
 [tool.maturin]
 module-name = "rustbpe"
