@@ -6,44 +6,30 @@ Federated GPT pretraining with nanochat - distributed training framework for lar
 
 - **Federated GPT Pretraining**: Train GPT models across multiple nodes using Flower framework
 - **Time-Based Rounds**: 5-minute training rounds for predictable runtime and sporadic client handling
-- **Efficient Tokenization**: Custom Rust BPE tokenizer with 65K vocab (GPT-4 style)
-- **Server-Side Evaluation**: Bits-per-byte metric on validation data
 - **Memory Optimized**: Aggressive cleanup for multi-client simulation on single GPU
 
-## Installation
+## Installation & Setup
 
 ```bash
-# Create and activate virtual environment
 uv venv
 uv sync
 source .venv/bin/activate
 ```
 
-### Build Rust Tokenizer
-
-The nanochat tokenizer uses a high-performance Rust BPE implementation:
+The nanochat tokenizer uses a high-performance Rust BPE implementation.
+To install Rust / Cargo and build the rustbpe tokenizer extension, run:
 
 ```bash
-# Install Rust / Cargo
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
-
-# Build rustbpe tokenizer extension
 uv run maturin develop --release --manifest-path rustbpe/Cargo.toml
 ```
 
-## Setup (One-Time)
-
-Before running federated training, you need to prepare the tokenizer:
+Before running federated training, prepare the tokenizer:
 
 ```bash
-# 1. Download dataset for tokenizer training (~22GB of FineWeb-EDU data)
-python -m nanochat.dataset -n 240
-
-# 2. Train BPE tokenizer on ~4B characters (creates 65K vocab)
-python -m scripts.tok_train --max_chars=4000000000 --vocab_size=65536
-
-# 3. Verify tokenizer is ready
+python -m nanochat.dataset -n 240  # Download dataset for tokenizer training (~22GB of FineWeb-EDU data)
+python -m scripts.tok_train --max_chars=4000000000 --vocab_size=65536  # Train BPE tokenizer on ~4B characters
 python -c "from nanochat.tokenizer import get_tokenizer; print(f'Vocab size: {get_tokenizer().get_vocab_size()}')"
 ```
 
