@@ -1,6 +1,8 @@
 import time
+import threading
 from logging import INFO
 
+import redis
 import torch
 import wandb
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
@@ -12,6 +14,7 @@ from pilot.model import get_model
 from pilot.data import fl_shard_dataloader
 
 app = ClientApp()
+round_end_requested = threading.Event()
 
 
 @app.train()
@@ -38,8 +41,15 @@ def train(msg: Message, context: Context):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     server_round = config.get("server_round", 0)
-    round_end_time = config.get("round_end_time")
-    round_start_time = time.time()
+
+    redis_url = context.run_config["redis_url"]
+    round_end_requested.clear()
+    listener_stop_event = threading.Event()
+    threading.Thread(
+        target=round_end_listener,
+        args=(redis_url, server_round, listener_stop_event),
+        daemon=True,
+    ).start()
 
     shard_assignments_raw = config.get("shard_assignments", [])
     shard_assignments = [(sid, start) for sid, start in shard_assignments_raw]
@@ -60,28 +70,6 @@ def train(msg: Message, context: Context):
     model = get_model(model_type, max_length)
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict(), strict=True)
     model.to(device)
-
-    if not shard_assignments:
-        log(INFO, f"Client {client_id}: No shards (training complete)")
-        state_dict = model.state_dict()
-        del model
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        return Message(
-            content=RecordDict({
-                "arrays": ArrayRecord(state_dict),
-                "metrics": MetricRecord({
-                    "client_id": client_id,
-                    "train_loss": 0.0,
-                    "batches_processed": 0,
-                    "total_rows_processed": 0,
-                    "shard_updates": [],
-                }),
-            }),
-            reply_to=msg,
-        )
 
     log(INFO, f"Client {client_id}: {len(shard_assignments)} shards: {shard_assignments}")
 
@@ -107,10 +95,6 @@ def train(msg: Message, context: Context):
     pbar = tqdm(trainloader, desc="Training")
 
     for inputs, targets, shard_id, rows_in_shard in pbar:
-        if round_end_time:
-            remaining = max(0, round_end_time - time.time())
-            pbar.set_description(f"shard_{shard_id} ({remaining:.0f}s)")
-
         inputs = inputs.to(device)
         targets = targets.to(device)
 
@@ -140,8 +124,8 @@ def train(msg: Message, context: Context):
 
         shard_progress[shard_id] = rows_in_shard
 
-        if round_end_time and time.time() >= round_end_time:
-            log(INFO, f"Round time expired after batch {batches_processed}")
+        if round_end_requested.is_set():
+            log(INFO, f"Round stop requested after batch {batches_processed}")
             break
 
     # Flush gradients
@@ -151,14 +135,12 @@ def train(msg: Message, context: Context):
 
     avg_loss = total_loss / batches_processed if batches_processed > 0 else 0.0
     total_rows_processed = sum(shard_progress.values())
-    actual_train_time = time.time() - round_start_time
 
-    log(INFO, f"Client {client_id}: {batches_processed} batches, {total_rows_processed} rows, {actual_train_time:.2f}s")
-
-    log(INFO, f"Client {client_id}: {batches_processed} batches, {total_rows_processed} rows, {actual_train_time:.2f}s")
+    log(INFO, f"Client {client_id}: {batches_processed} batches, {total_rows_processed} rows")
 
     new_cumulative_batches = cumulative_batches + batches_processed
     context.state["cumulative_batches"] = MetricRecord({"cumulative_batches": new_cumulative_batches})
+    listener_stop_event.set()
 
     return Message(
         content=RecordDict({
@@ -166,7 +148,6 @@ def train(msg: Message, context: Context):
             "metrics": MetricRecord({
                 "client_id": client_id,
                 "train_loss": avg_loss,
-                "actual_train_time": actual_train_time,
                 "batches_processed": batches_processed,
                 "total_rows_processed": total_rows_processed,
                 "shard_updates": [[sid, rows] for sid, rows in shard_progress.items()],
@@ -175,3 +156,17 @@ def train(msg: Message, context: Context):
         }),
         reply_to=msg,
     )
+
+
+def round_end_listener(redis_url: str, server_round: int, stop_event: threading.Event):
+    client = redis.from_url(redis_url)
+    pubsub = client.pubsub()
+    pubsub.subscribe(f"round:{server_round}:stop")
+    try:
+        while not stop_event.is_set():
+            message = pubsub.get_message(timeout=1.0)
+            if message and message["type"] == "message":
+                round_end_requested.set()
+                break
+    finally:
+        pubsub.close()

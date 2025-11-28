@@ -14,6 +14,7 @@ dependencies = [
     "tqdm",
     "transformers",
     "wandb",
+    "redis>=5.0.0",
 
     # Utilities
     "accelerate",
@@ -56,9 +57,12 @@ serverapp = "pilot.server_app:app"
 clientapp = "pilot.client_app:app"
 
 [tool.flwr.app.config]
+redis_url = "redis://localhost:6379"
+round_min_duration = 300  # Seconds to wait before stopping a round after multiple clients join
+
+log_interval = 10  # Log client metrics every N batches
 wandb_project = "pilot_flwr"
 # wandb_entity = ""  # Optional wandb username / team name
-log_interval = 10  # Log client metrics every N batches
 # debug_port_server = 5681
 # debug_port_client = 5682
 

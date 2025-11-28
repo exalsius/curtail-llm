@@ -1,8 +1,10 @@
 import io
 import time
+import threading
 from logging import INFO
 from typing import Iterable, Optional
 
+import redis
 import torch
 import wandb
 from flwr.app import ArrayRecord, ConfigRecord, Context, MetricRecord, Message
@@ -22,8 +24,43 @@ from pilot.data import ShardManager
 
 app = ServerApp()
 
-# Time-based round duration (can be made configurable later)
-ROUND_DURATION = 300  # seconds (set to 30 for testing, change to 300 for production)
+# Time-based round duration handled via configuration and Redis stop signals
+
+
+class RoundStopMonitor:
+    def __init__(self, grid: Grid, redis_client: redis.Redis, min_duration: int):
+        self.grid = grid
+        self.redis_client = redis_client
+        self.min_duration = min_duration
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self, server_round: int) -> None:
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._run,
+            args=(server_round,),
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._thread is None:
+            return
+        self._stop_event.set()
+        self._thread.join()
+        self._thread = None
+
+    def _run(self, server_round: int) -> None:
+        start_time = time.time()
+        channel = f"round:{server_round}:stop"
+        while not self._stop_event.is_set():
+            node_count = len(list(self.grid.get_node_ids()))
+            elapsed = time.time() - start_time
+            if node_count > 1 and elapsed >= self.min_duration:
+                self.redis_client.publish(channel, "stop")
+                break
+            time.sleep(1)
 
 
 class PilotAvg(Strategy):
@@ -35,6 +72,9 @@ class PilotAvg(Strategy):
         dataset_name: str,
         num_shards: int,
         debug_port_client: bool,
+        redis_url: str,
+        redis_client: redis.Redis,
+        min_round_duration: int,
         wandb_run_id: Optional[str] = None,
         wandb_project: Optional[str] = None,
         wandb_entity: Optional[str] = None,
@@ -44,6 +84,9 @@ class PilotAvg(Strategy):
         self.num_shards = num_shards
         self.shard_manager = ShardManager(num_shards=num_shards)
         self.debug_port_client = debug_port_client
+        self.redis_url = redis_url
+        self.redis_client = redis_client
+        self.min_round_duration = min_round_duration
         self.weighted_by_key = "batches_processed"
         self.wandb_run_id = wandb_run_id
         self.wandb_project = wandb_project
@@ -74,13 +117,10 @@ class PilotAvg(Strategy):
             else:
                 log(INFO, f"└──> Client {node_id}: No shards (training complete)")
 
-        # Calculate round end time (current time + round duration)
-        round_end_time = time.time() + ROUND_DURATION
-
         base_config["server_round"] = server_round
-        base_config["round_end_time"] = round_end_time
         base_config["dataset_name"] = self.dataset_name
         base_config["num_shards"] = self.num_shards
+        base_config["redis_url"] = self.redis_url
         if self.debug_port_client:
             base_config["debug_port_client"] = self.debug_port_client
 
@@ -209,11 +249,14 @@ class PilotAvg(Strategy):
 
         arrays = initial_arrays
 
+        round_monitor = RoundStopMonitor(grid, self.redis_client, self.min_round_duration)
+
         for current_round in range(1, num_rounds + 1):
             log(INFO, "")
             log(INFO, "[ROUND %s/%s]", current_round, num_rounds)
 
             # TRAINING
+            round_monitor.start(current_round)
             train_replies = grid.send_and_receive(
                 messages=self.configure_train(
                     current_round,
@@ -223,6 +266,7 @@ class PilotAvg(Strategy):
                 ),
                 timeout=timeout,
             )
+            round_monitor.stop()
             agg_arrays, agg_train_metrics = self.aggregate_train(current_round, train_replies)
 
             # Log training metrics and append to history
@@ -316,6 +360,8 @@ def main(grid: Grid, context: Context) -> None:
     num_shards: int = context.run_config["num_shards"]
     batch_size: int = context.run_config["batch_size"]
     model_type: str = context.run_config["model_type"]
+    redis_url: str = context.run_config["redis_url"]
+    min_round_duration: int = context.run_config.get("round_min_duration", 300)
 
     debug_port_server: int = context.run_config.get("debug_port_server", None)
     if debug_port_server:
@@ -359,10 +405,15 @@ def main(grid: Grid, context: Context) -> None:
 
     arrays = ArrayRecord(global_model.state_dict())
 
+    redis_client = redis.from_url(redis_url)
+
     strategy = PilotAvg(
         dataset_name=dataset_name,
         num_shards=num_shards,
         debug_port_client=context.run_config.get("debug_port_client", None),
+        redis_url=redis_url,
+        redis_client=redis_client,
+        min_round_duration=min_round_duration,
         wandb_run_id=wandb_run_id,
         wandb_project=wandb_project,
         wandb_entity=wandb_entity,
@@ -462,14 +513,6 @@ def global_evaluate(
 
     log(INFO, f"Evaluation complete: bits-per-byte = {bpb:.4f}")
 
-    wandb.log({
-        "server/eval_bpb": bpb,
-    }, step=server_round)
-
-    # Cleanup
-    del model
-    import gc
-    gc.collect()
-    torch.cuda.empty_cache()
+    wandb.log({"server/eval_bpb": bpb,}, step=server_round)
 
     return MetricRecord({"bits_per_byte": bpb})

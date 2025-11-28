@@ -5,8 +5,8 @@ Federated GPT pretraining with nanochat - distributed training framework for lar
 ## Features
 
 - **Federated GPT Pretraining**: Train GPT models across multiple nodes using Flower framework
-- **Time-Based Rounds**: 5-minute training rounds for predictable runtime and sporadic client handling
-- **Memory Optimized**: Aggressive cleanup for multi-client simulation on single GPU
+- **Redis Coordination**: Server-controlled stopping and shard assignment via Redis
+- **Server-Controlled Rounds**: Dynamic round control based on client availability
 
 ## Installation & Setup
 
@@ -16,6 +16,18 @@ uv sync
 source .venv/bin/activate
 ```
 
+### Redis Setup
+
+The system uses Redis for coordination between server and clients:
+
+```bash
+docker run -d -p 6379:6379 redis:latest
+```
+
+For distributed deployment, use managed Redis (AWS ElastiCache, Redis Cloud) and configure `redis_url` in `pyproject.toml`.
+
+### Rust Tokenizer
+
 The nanochat tokenizer uses a high-performance Rust BPE implementation.
 To install Rust / Cargo and build the rustbpe tokenizer extension, run:
 
@@ -24,6 +36,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 uv run maturin develop --release --manifest-path rustbpe/Cargo.toml
 ```
+
+### Tokenizer Training
 
 Before running federated training, prepare the tokenizer:
 
@@ -111,8 +125,8 @@ python scripts/base_eval.py --checkpoint final_model.pt
 
 - **Mixed Precision**: BFloat16 for efficient GPU utilization
 - **Gradient Accumulation**: Simulate larger batch sizes
-- **Time-Based Rounds**: Fixed 5-minute rounds for predictable runtime
-- **Distributed Sharding**: ShardManager assigns clients to shards with least progress
+- **Server-Controlled Stopping**: Redis pub/sub for dynamic round control
+- **Distributed Sharding**: Redis-based coordination for shard assignments
 
 ### Data Strategy
 
