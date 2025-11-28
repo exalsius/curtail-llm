@@ -69,7 +69,7 @@ task_type = "nanochat"
 model_type = "nanochat_d20"  # d20 = 20 layers, 560M params
 dataset_name = "karpathy/fineweb-edu-100b-shuffle"
 num_shards = 240  # Number of parquet files to use (each ~53k rows)
-num_rounds = 3  # For testing (short run)
+num_rounds = 3  # For testing (short run)  # TODO remove
 lr = 0.0006  # nanochat's original learning rate
 weight_decay = 0.01
 batch_size = 2  # Small batch for testing

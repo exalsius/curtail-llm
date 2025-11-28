@@ -359,15 +359,6 @@ def main(grid: Grid, context: Context) -> None:
 
     arrays = ArrayRecord(global_model.state_dict())
 
-    # TEMPORARY: Free memory in simulation mode (in production, server/client on separate nodes)
-    # Evaluation will reload model as needed and clean up afterwards
-    log(INFO, "Freeing server model memory for simulation...")
-    del global_model
-    import gc
-    gc.collect()
-    torch.cuda.empty_cache()
-    log(INFO, "Server model memory freed")
-
     strategy = PilotAvg(
         dataset_name=dataset_name,
         num_shards=num_shards,

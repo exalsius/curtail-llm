@@ -61,7 +61,6 @@ def train(msg: Message, context: Context):
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict(), strict=True)
     model.to(device)
 
-    # Handle empty shard assignments
     if not shard_assignments:
         log(INFO, f"Client {client_id}: No shards (training complete)")
         state_dict = model.state_dict()
@@ -156,19 +155,14 @@ def train(msg: Message, context: Context):
 
     log(INFO, f"Client {client_id}: {batches_processed} batches, {total_rows_processed} rows, {actual_train_time:.2f}s")
 
-    # Cleanup
-    state_dict = model.state_dict()
-    del model
-    import gc
-    gc.collect()
-    torch.cuda.empty_cache()
+    log(INFO, f"Client {client_id}: {batches_processed} batches, {total_rows_processed} rows, {actual_train_time:.2f}s")
 
     new_cumulative_batches = cumulative_batches + batches_processed
     context.state["cumulative_batches"] = MetricRecord({"cumulative_batches": new_cumulative_batches})
 
     return Message(
         content=RecordDict({
-            "arrays": ArrayRecord(state_dict),
+            "arrays": ArrayRecord(model.state_dict()),
             "metrics": MetricRecord({
                 "client_id": client_id,
                 "train_loss": avg_loss,
