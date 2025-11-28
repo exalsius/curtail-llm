@@ -218,11 +218,10 @@ class PilotAvg(Strategy):
             # TRAINING
             # Start monitor thread to signal stop when conditions are met
             def _monitor():
-                start = time.time()
-                while time.time() - start < self.min_round_duration:
+                time.sleep(self.min_round_duration)
+                while len(list(grid.get_node_ids())) <= 1:
                     time.sleep(1)
-                if len(list(grid.get_node_ids())) > 1:
-                    self.redis_client.publish(f"round:{current_round}:stop", "stop")
+                self.redis_client.publish(f"round:{current_round}:stop", "stop")
 
             threading.Thread(target=_monitor, daemon=True).start()
 
