@@ -24,44 +24,6 @@ from pilot.data import ShardManager
 
 app = ServerApp()
 
-# Time-based round duration handled via configuration and Redis stop signals
-
-
-class RoundStopMonitor:
-    def __init__(self, grid: Grid, redis_client: redis.Redis, min_duration: int):
-        self.grid = grid
-        self.redis_client = redis_client
-        self.min_duration = min_duration
-        self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def start(self, server_round: int) -> None:
-        self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._run,
-            args=(server_round,),
-            daemon=True,
-        )
-        self._thread.start()
-
-    def stop(self) -> None:
-        if self._thread is None:
-            return
-        self._stop_event.set()
-        self._thread.join()
-        self._thread = None
-
-    def _run(self, server_round: int) -> None:
-        start_time = time.time()
-        channel = f"round:{server_round}:stop"
-        while not self._stop_event.is_set():
-            node_count = len(list(self.grid.get_node_ids()))
-            elapsed = time.time() - start_time
-            if node_count > 1 and elapsed >= self.min_duration:
-                self.redis_client.publish(channel, "stop")
-                break
-            time.sleep(1)
-
 
 class PilotAvg(Strategy):
     """Custom Pilot Strategy based on FedAvg."""
@@ -249,14 +211,21 @@ class PilotAvg(Strategy):
 
         arrays = initial_arrays
 
-        round_monitor = RoundStopMonitor(grid, self.redis_client, self.min_round_duration)
-
         for current_round in range(1, num_rounds + 1):
             log(INFO, "")
             log(INFO, "[ROUND %s/%s]", current_round, num_rounds)
 
             # TRAINING
-            round_monitor.start(current_round)
+            # Start monitor thread to signal stop when conditions are met
+            def _monitor():
+                start = time.time()
+                while time.time() - start < self.min_round_duration:
+                    time.sleep(1)
+                if len(list(grid.get_node_ids())) > 1:
+                    self.redis_client.publish(f"round:{current_round}:stop", "stop")
+
+            threading.Thread(target=_monitor, daemon=True).start()
+
             train_replies = grid.send_and_receive(
                 messages=self.configure_train(
                     current_round,
@@ -266,7 +235,6 @@ class PilotAvg(Strategy):
                 ),
                 timeout=timeout,
             )
-            round_monitor.stop()
             agg_arrays, agg_train_metrics = self.aggregate_train(current_round, train_replies)
 
             # Log training metrics and append to history

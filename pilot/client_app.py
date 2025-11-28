@@ -1,5 +1,4 @@
 import time
-import threading
 from logging import INFO
 
 import redis
@@ -14,7 +13,6 @@ from pilot.model import get_model
 from pilot.data import fl_shard_dataloader
 
 app = ClientApp()
-round_end_requested = threading.Event()
 
 
 @app.train()
@@ -43,14 +41,6 @@ def train(msg: Message, context: Context):
     server_round = config.get("server_round", 0)
 
     redis_url = context.run_config["redis_url"]
-    round_end_requested.clear()
-    listener_stop_event = threading.Event()
-    threading.Thread(
-        target=round_end_listener,
-        args=(redis_url, server_round, listener_stop_event),
-        daemon=True,
-    ).start()
-
     shard_assignments_raw = config.get("shard_assignments", [])
     shard_assignments = [(sid, start) for sid, start in shard_assignments_raw]
 
@@ -82,6 +72,10 @@ def train(msg: Message, context: Context):
         tokenizer_batch_size=context.run_config.get("tokenizer_batch_size", 128),
         device=device.type,
     )
+
+    # Setup Redis pubsub for stop signal
+    pubsub = redis.from_url(redis_url).pubsub()
+    pubsub.subscribe(f"round:{server_round}:stop")
 
     # Training loop
     model.train()
@@ -124,8 +118,9 @@ def train(msg: Message, context: Context):
 
         shard_progress[shard_id] = rows_in_shard
 
-        if round_end_requested.is_set():
-            log(INFO, f"Round stop requested after batch {batches_processed}")
+        # Check for stop signal (non-blocking)
+        if pubsub.get_message(timeout=0):
+            log(INFO, f"Round stop signal received after batch {batches_processed}")
             break
 
     # Flush gradients
@@ -140,7 +135,6 @@ def train(msg: Message, context: Context):
 
     new_cumulative_batches = cumulative_batches + batches_processed
     context.state["cumulative_batches"] = MetricRecord({"cumulative_batches": new_cumulative_batches})
-    listener_stop_event.set()
 
     return Message(
         content=RecordDict({
@@ -156,17 +150,3 @@ def train(msg: Message, context: Context):
         }),
         reply_to=msg,
     )
-
-
-def round_end_listener(redis_url: str, server_round: int, stop_event: threading.Event):
-    client = redis.from_url(redis_url)
-    pubsub = client.pubsub()
-    pubsub.subscribe(f"round:{server_round}:stop")
-    try:
-        while not stop_event.is_set():
-            message = pubsub.get_message(timeout=1.0)
-            if message and message["type"] == "message":
-                round_end_requested.set()
-                break
-    finally:
-        pubsub.close()
