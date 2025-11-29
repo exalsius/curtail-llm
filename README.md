@@ -16,13 +16,6 @@ uv sync
 source .venv/bin/activate
 ```
 
-### Redis Setup
-
-The system uses Redis for coordination between server and clients:
-
-```bash
-docker run -d -p 6379:6379 redis:latest
-```
 
 For distributed deployment, use managed Redis (AWS ElastiCache, Redis Cloud) and configure `redis_url` in `pyproject.toml`.
 
@@ -50,6 +43,19 @@ python -c "from nanochat.tokenizer import get_tokenizer; print(f'Vocab size: {ge
 **Tokenizer Storage:**
 - Default: `~/.cache/nanochat/tokenizer/`
 - Custom: Set `export NANOCHAT_BASE_DIR=/path/to/shared/storage`
+
+
+### Redis Setup
+
+The system uses Redis for coordination between server and clients:
+
+```bash
+apt-get update
+apt-get install redis-server
+redis-server --daemonize yes
+# redis-cli ping
+# docker run -d -p 6379:6379 redis:latest
+```
 
 ## Quick Start
 
