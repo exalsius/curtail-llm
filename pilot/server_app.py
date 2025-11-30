@@ -187,7 +187,7 @@ class PilotAvg(Strategy):
         self,
         grid: Grid,
         initial_arrays: ArrayRecord,
-        num_rounds: int = 3,
+        num_rounds: int = 1e100,
         timeout: float = 3600,
         train_config: Optional[ConfigRecord] = None,
         evaluate_config: Optional[ConfigRecord] = None,
@@ -306,7 +306,6 @@ class PilotAvg(Strategy):
 @app.main()
 def main(grid: Grid, context: Context) -> None:
     """Main entry point for the ServerApp."""
-    num_rounds: int = context.run_config["num_rounds"]
     lr: float = context.run_config["lr"]
     dataset_name: str = context.run_config["dataset_name"]
     num_shards: int = context.run_config["num_shards"]
@@ -325,11 +324,8 @@ def main(grid: Grid, context: Context) -> None:
     wandb_project: str = context.run_config["wandb_project"]
     wandb_entity: str | None = context.run_config.get("wandb_entity")
 
-    # Get number of supernodes from grid
-    num_supernodes = len(list(grid.get_node_ids()))
-
     # Create run name with hyperparameters
-    run_name = f"nodes{num_supernodes},sh{num_shards},bs{batch_size},rounds{num_rounds}"
+    run_name = f"sh{num_shards},bs{batch_size}"
 
     wandb.init(
         project=wandb_project,
@@ -337,25 +333,14 @@ def main(grid: Grid, context: Context) -> None:
         name=run_name,
         group=run_name,  # Group all runs together
         config={
-            "num_supernodes": num_supernodes,
             "learning_rate": lr,
             "batch_size": batch_size,
             "num_shards": num_shards,
-            "num_rounds": num_rounds,
             "model_type": model_type,
             "dataset_name": dataset_name,
         }
     )
     log(INFO, "Wandb initialized with run_id: %s", wandb.run.id)
-
-    wandb_run_id = wandb.run.id
-    wandb_run_group = run_name
-
-    # Load global model
-    max_length = context.run_config.get("max_length", 2048)
-    global_model = get_model(model_type, max_length)
-
-    arrays = ArrayRecord(global_model.state_dict())
 
     redis_client = redis.from_url(redis_url)
 
@@ -366,20 +351,20 @@ def main(grid: Grid, context: Context) -> None:
         redis_url=redis_url,
         redis_client=redis_client,
         min_round_duration=min_round_duration,
-        wandb_run_id=wandb_run_id,
+        wandb_run_id=wandb.run.id,
         wandb_project=wandb_project,
         wandb_entity=wandb_entity,
-        wandb_run_group=wandb_run_group,
+        wandb_run_group=run_name,
     )
 
-    # Get max_length from run_config
+    # Load global model
     max_length = context.run_config.get("max_length", 2048)
+    global_model = get_model(model_type, max_length)
 
     result = strategy.start(
         grid=grid,
-        initial_arrays=arrays,
+        initial_arrays=ArrayRecord(global_model.state_dict()),
         train_config=ConfigRecord(dict(lr=lr)),
-        num_rounds=num_rounds,
     )
 
     # Save final model to disk
