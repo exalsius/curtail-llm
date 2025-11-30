@@ -203,22 +203,24 @@ class PilotAvg(Strategy):
         result = Result()
 
         t_start = time.time()
-        # Note: No evaluation
 
         arrays = initial_arrays
 
         for current_round in range(1, int(num_rounds + 1)):
             log(INFO, f"\n[ROUND {current_round}]")
+            round_start = time.time()
 
-            # TRAINING
-            # Start monitor thread to signal stop when conditions are met
             def _monitor():
                 time.sleep(self.min_round_duration)
-                while len(list(grid.get_node_ids())) <= 1:
-                    time.sleep(1)
+                connected_clients = len(list(grid.get_node_ids()))
+                while connected_clients <= 1:
+                    log(INFO, f"Round active since {int(time.time() - round_start)}s, waiting for more clients to join...")
+                    time.sleep(10)
                 self.redis_client.publish(f"round:{current_round}:stop", "stop")
+                log(INFO, f"Signaling ROUND END after {int(time.time() - round_start)}s with {connected_clients} connected clients.")
 
-            threading.Thread(target=_monitor, daemon=True).start()
+            monitor_thread = threading.Thread(target=_monitor, daemon=True)
+            monitor_thread.start()
 
             train_replies = grid.send_and_receive(
                 messages=self.configure_train(
@@ -229,6 +231,9 @@ class PilotAvg(Strategy):
                 ),
                 timeout=timeout,
             )
+
+            monitor_thread.join(timeout=2.0)  # Ensure monitor thread has finished
+
             agg_arrays, agg_train_metrics = self.aggregate_train(current_round, train_replies)
 
             # Log training metrics and append to history
@@ -239,7 +244,6 @@ class PilotAvg(Strategy):
                 log(INFO, "\t└──> Aggregated MetricRecord: %s", agg_train_metrics)
                 result.train_metrics_clientapp[current_round] = agg_train_metrics
 
-            # Note: No evaluation
 
         log(INFO, "\nStrategy execution finished in %.2fs\n", time.time() - t_start)
         log(INFO, "Final results:\n")
@@ -248,57 +252,6 @@ class PilotAvg(Strategy):
         log(INFO, "")
 
         return result
-
-    def _check_and_log_replies(
-        self, replies: Iterable[Message], is_train: bool, validate: bool = True
-    ) -> tuple[list[Message], list[Message]]:
-        """Check replies for errors and log them.
-
-        Parameters
-        ----------
-        replies : Iterable[Message]
-            Iterable of reply Messages.
-        is_train : bool
-            Set to True if the replies are from a training round; False otherwise.
-            This impacts logging and validation behavior.
-        validate : bool (default: True)
-            Whether to validate the reply contents for consistency.
-
-        Returns
-        -------
-        tuple[list[Message], list[Message]]
-            A tuple containing two lists:
-            - Messages with valid contents.
-            - Messages with errors.
-        """
-        if not replies:
-            return [], []
-
-        # Filter messages that carry content
-        valid_replies: list[Message] = []
-        error_replies: list[Message] = []
-        for msg in replies:
-            if msg.has_error():
-                error_replies.append(msg)
-            else:
-                valid_replies.append(msg)
-
-        log(INFO, "%s: Received %s results and %s failures",
-            "aggregate_train" if is_train else "aggregate_evaluate", len(valid_replies), len(error_replies))
-
-        # Log errors
-        for msg in error_replies:
-            log(INFO, "\t> Received error in reply from node %d: %s", msg.metadata.src_node_id, msg.error.reason)
-
-        # Ensure expected ArrayRecords and MetricRecords are received
-        if validate and valid_replies:
-            validate_message_reply_consistency(
-                replies=[msg.content for msg in valid_replies],
-                weighted_by_key=self.weighted_by_key,
-                check_arrayrecord=is_train,
-            )
-
-        return valid_replies, error_replies
 
 
 @app.main()
