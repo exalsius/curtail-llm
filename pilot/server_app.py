@@ -13,10 +13,10 @@ from flwr.server.grid.grid import Grid
 from flwr.serverapp import ServerApp
 from flwr.serverapp.strategy import Strategy, Result
 from flwr.serverapp.strategy.strategy_utils import (
-    log_strategy_start_info,
     aggregate_arrayrecords,
     aggregate_metricrecords,
     validate_message_reply_consistency,
+    config_to_str,
 )
 
 from pilot.model import get_model
@@ -37,7 +37,6 @@ class PilotAvg(Strategy):
         redis_url: str,
         redis_client: redis.Redis,
         min_round_duration: int,
-        wandb_run_id: Optional[str] = None,
         wandb_project: Optional[str] = None,
         wandb_entity: Optional[str] = None,
         wandb_run_group: Optional[str] = None,
@@ -50,7 +49,6 @@ class PilotAvg(Strategy):
         self.redis_client = redis_client
         self.min_round_duration = min_round_duration
         self.weighted_by_key = "batches_processed"
-        self.wandb_run_id = wandb_run_id
         self.wandb_project = wandb_project
         self.wandb_entity = wandb_entity
         self.wandb_run_group = wandb_run_group
@@ -87,7 +85,6 @@ class PilotAvg(Strategy):
             base_config["debug_port_client"] = self.debug_port_client
 
         # Pass W&B configuration to clients
-        base_config["wandb_run_id"] = self.wandb_run_id
         base_config["wandb_project"] = self.wandb_project
         base_config["wandb_group"] = self.wandb_run_group
         if self.wandb_entity:
@@ -193,9 +190,11 @@ class PilotAvg(Strategy):
         evaluate_config: Optional[ConfigRecord] = None,
         evaluate_fn: Optional[callable] = None,
     ):
-        """Run time-based federated learning for num_rounds."""
+        """Run time-based federated learning."""
         log(INFO, "Starting %s strategy:", self.__class__.__name__)
-        log_strategy_start_info(num_rounds, initial_arrays, train_config, evaluate_config)
+        log(INFO, "\t├── ArrayRecord (%.2f MB)", sum(len(array.data) for array in initial_arrays.values()) / (1024 ** 2))
+        log(INFO, "\t├── ConfigRecord (train): %s", config_to_str(train_config))
+
         self.summary()
         log(INFO, "")
 
@@ -208,7 +207,7 @@ class PilotAvg(Strategy):
 
         arrays = initial_arrays
 
-        for current_round in range(1, num_rounds + 1):
+        for current_round in range(1, int(num_rounds + 1)):
             log(INFO, "")
             log(INFO, "[ROUND %s/%s]", current_round, num_rounds)
 
@@ -351,7 +350,6 @@ def main(grid: Grid, context: Context) -> None:
         redis_url=redis_url,
         redis_client=redis_client,
         min_round_duration=min_round_duration,
-        wandb_run_id=wandb.run.id,
         wandb_project=wandb_project,
         wandb_entity=wandb_entity,
         wandb_run_group=run_name,
