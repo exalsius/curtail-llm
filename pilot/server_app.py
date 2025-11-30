@@ -36,7 +36,7 @@ class PilotAvg(Strategy):
         debug_port_client: bool,
         redis_url: str,
         redis_client: redis.Redis,
-        min_round_duration: int,
+        round_min_duration: int,
         wandb_project: Optional[str] = None,
         wandb_entity: Optional[str] = None,
         wandb_run_group: Optional[str] = None,
@@ -47,7 +47,7 @@ class PilotAvg(Strategy):
         self.debug_port_client = debug_port_client
         self.redis_url = redis_url
         self.redis_client = redis_client
-        self.min_round_duration = min_round_duration
+        self.round_min_duration = round_min_duration
         self.weighted_by_key = "batches_processed"
         self.wandb_project = wandb_project
         self.wandb_entity = wandb_entity
@@ -211,13 +211,12 @@ class PilotAvg(Strategy):
             round_start = time.time()
 
             def _monitor():
-                time.sleep(self.min_round_duration)
-                connected_clients = len(list(grid.get_node_ids()))
-                while connected_clients <= 1:
+                time.sleep(self.round_min_duration)
+                while len(list(grid.get_node_ids())) <= 1:
                     log(INFO, f"Round active since {int(time.time() - round_start)}s, waiting for more clients to join...")
                     time.sleep(10)
                 self.redis_client.publish(f"round:{current_round}:stop", "stop")
-                log(INFO, f"Signaling ROUND END after {int(time.time() - round_start)}s with {connected_clients} connected clients.")
+                log(INFO, f"Signaling ROUND END after {int(time.time() - round_start)}s with {len(list(grid.get_node_ids()))} connected clients.")
 
             monitor_thread = threading.Thread(target=_monitor, daemon=True)
             monitor_thread.start()
@@ -253,6 +252,39 @@ class PilotAvg(Strategy):
 
         return result
 
+    def _check_and_log_replies(
+        self, replies: Iterable[Message], is_train: bool, validate: bool = True
+    ) -> tuple[list[Message], list[Message]]:
+        """Copied from FedAvg"""
+        if not replies:
+            return [], []
+
+        # Filter messages that carry content
+        valid_replies: list[Message] = []
+        error_replies: list[Message] = []
+        for msg in replies:
+            if msg.has_error():
+                error_replies.append(msg)
+            else:
+                valid_replies.append(msg)
+
+        log(INFO, "%s: Received %s results and %s failures",
+            "aggregate_train" if is_train else "aggregate_evaluate", len(valid_replies), len(error_replies))
+
+        # Log errors
+        for msg in error_replies:
+            log(INFO, "\t> Received error in reply from node %d: %s", msg.metadata.src_node_id, msg.error.reason)
+
+        # Ensure expected ArrayRecords and MetricRecords are received
+        if validate and valid_replies:
+            validate_message_reply_consistency(
+                replies=[msg.content for msg in valid_replies],
+                weighted_by_key=self.weighted_by_key,
+                check_arrayrecord=is_train,
+            )
+
+        return valid_replies, error_replies
+
 
 @app.main()
 def main(grid: Grid, context: Context) -> None:
@@ -263,7 +295,7 @@ def main(grid: Grid, context: Context) -> None:
     batch_size: int = context.run_config["batch_size"]
     model_type: str = context.run_config["model_type"]
     redis_url: str = context.run_config["redis_url"]
-    min_round_duration: int = context.run_config.get("round_min_duration", 300)
+    round_min_duration: int = context.run_config["round_min_duration"]
 
     debug_port_server: int = context.run_config.get("debug_port_server", None)
     if debug_port_server:
@@ -301,7 +333,7 @@ def main(grid: Grid, context: Context) -> None:
         debug_port_client=context.run_config.get("debug_port_client", None),
         redis_url=redis_url,
         redis_client=redis_client,
-        min_round_duration=min_round_duration,
+        round_min_duration=round_min_duration,
         wandb_project=wandb_project,
         wandb_entity=wandb_entity,
         wandb_run_group=run_name,
