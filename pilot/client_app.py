@@ -50,7 +50,6 @@ def train(msg: Message, context: Context):
         project=config["wandb_project"],
         entity=config.get("wandb_entity"),
         name=f"client_{client_id}",
-        id=f"{config['wandb_run_id']}_{client_id}",
         group=config["wandb_group"],
         resume="allow",
         reinit=True,
