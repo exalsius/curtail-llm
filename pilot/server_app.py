@@ -96,10 +96,13 @@ class PilotAvg(Strategy):
         messages = []
         for node_id in node_ids:
             shard_list = assignments[node_id]
-            # Convert list of tuples to lists for serialization
+            # Convert list of tuples to two parallel lists for serialization
+            shard_ids = [sid for sid, _ in shard_list]
+            shard_starts = [start for _, start in shard_list]
             config = ConfigRecord({
                 **base_config,
-                "shard_assignments": [[sid, start] for sid, start in shard_list]
+                "shard_ids": shard_ids,
+                "shard_starts": shard_starts,
             })
             record = RecordDict({"arrays": arrays, "config": config})
             message = Message(content=record, message_type=MessageType.TRAIN, dst_node_id=node_id)
@@ -116,8 +119,10 @@ class PilotAvg(Strategy):
         # Update shard states from worker results
         for reply in replies:
             metrics: MetricRecord = reply.content["metrics"]
-            # shard_updates is a list of [shard_id, rows_processed] pairs
-            shard_updates = [(sid, rows) for sid, rows in metrics["shard_updates"]]
+            # Reconstruct shard_updates from two parallel lists
+            shard_ids = metrics["shard_ids"]
+            shard_rows = metrics["shard_rows"]
+            shard_updates = list(zip(shard_ids, shard_rows))
             self.shard_manager.update(shard_updates)
 
         progress = self.shard_manager.get_progress_summary()

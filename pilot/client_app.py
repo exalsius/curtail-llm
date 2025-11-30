@@ -41,8 +41,9 @@ def train(msg: Message, context: Context):
     server_round = config.get("server_round", 0)
 
     redis_url = context.run_config["redis_url"]
-    shard_assignments_raw = config.get("shard_assignments", [])
-    shard_assignments = [(sid, start) for sid, start in shard_assignments_raw]
+    shard_ids = config.get("shard_ids", [])
+    shard_starts = config.get("shard_starts", [])
+    shard_assignments = list(zip(shard_ids, shard_starts))
 
     # W&B init
     wandb.init(
@@ -136,6 +137,10 @@ def train(msg: Message, context: Context):
     new_cumulative_batches = cumulative_batches + batches_processed
     context.state["cumulative_batches"] = MetricRecord({"cumulative_batches": new_cumulative_batches})
 
+    # Convert shard_progress to two parallel lists
+    shard_ids = list(shard_progress.keys())
+    shard_rows = list(shard_progress.values())
+
     return Message(
         content=RecordDict({
             "arrays": ArrayRecord(model.state_dict()),
@@ -144,7 +149,8 @@ def train(msg: Message, context: Context):
                 "train_loss": avg_loss,
                 "batches_processed": batches_processed,
                 "total_rows_processed": total_rows_processed,
-                "shard_updates": [[sid, rows] for sid, rows in shard_progress.items()],
+                "shard_ids": shard_ids,
+                "shard_rows": shard_rows,
                 "cumulative_batches": new_cumulative_batches,
             }),
         }),
