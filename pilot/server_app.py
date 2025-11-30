@@ -208,8 +208,7 @@ class PilotAvg(Strategy):
         arrays = initial_arrays
 
         for current_round in range(1, int(num_rounds + 1)):
-            log(INFO, "")
-            log(INFO, "[ROUND %s/%s]", current_round, num_rounds)
+            log(INFO, f"\n[ROUND {current_round}]")
 
             # TRAINING
             # Start monitor thread to signal stop when conditions are met
