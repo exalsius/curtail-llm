@@ -113,25 +113,28 @@ class PilotAvg(Strategy):
         replies: Iterable[Message],
     ) -> tuple[Optional[ArrayRecord], Optional[MetricRecord]]:
         """Aggregate ArrayRecords and MetricRecords in the received Messages."""
-        # Update shard states from worker results
-        for reply in replies:
-            metrics: MetricRecord = reply.content["metrics"]
-            # Reconstruct shard_updates from two parallel lists
-            shard_ids = metrics["shard_ids"]
-            shard_rows = metrics["shard_rows"]
-            shard_updates = list(zip(shard_ids, shard_rows))
-            self.shard_manager.update(shard_updates)
 
-        progress = self.shard_manager.get_progress_summary()
-        log(INFO, f"[Round {server_round}] Shard progress: {progress['progress']:.1%} "
-                  f"({progress['processed_rows']:,}/{progress['total_rows']:,} rows, "
-                  f"{progress['num_complete']}/{progress['num_total']} complete)")
-
-        # Default FedAvg aggregation
         valid_replies, _ = self._check_and_log_replies(replies, is_train=True)
+
         arrays, metrics = None, None
         if valid_replies:
             reply_contents = [msg.content for msg in valid_replies]
+
+            # Update shard states from worker results
+            for reply_content in reply_contents:
+                metrics: MetricRecord = reply_content["metrics"]
+                # Reconstruct shard_updates from two parallel lists
+                shard_ids = metrics["shard_ids"]
+                shard_rows = metrics["shard_rows"]
+                shard_updates = list(zip(shard_ids, shard_rows))
+                self.shard_manager.update(shard_updates)
+
+            progress = self.shard_manager.get_progress_summary()
+            log(INFO, f"[Round {server_round}] Shard progress: {progress['progress']:.1%} "
+                      f"({progress['processed_rows']:,}/{progress['total_rows']:,} rows, "
+                      f"{progress['num_complete']}/{progress['num_total']} complete)")
+
+            # Default FedAvg aggregation
             arrays = aggregate_arrayrecords(reply_contents, self.weighted_by_key)
             metrics = aggregate_metricrecords(reply_contents, self.weighted_by_key)  # can be customized
 
