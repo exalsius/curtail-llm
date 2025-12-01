@@ -62,7 +62,10 @@ class PilotAvg(Strategy):
         self, server_round: int, arrays: ArrayRecord, base_config: ConfigRecord, grid: Grid
     ) -> Iterable[Message]:
         """Configure the next round of federated training."""
-        node_ids = list(grid.get_node_ids())
+        while len(node_ids := list(grid.get_node_ids())) < 1:
+            log(INFO, "Waiting for a client to connect")
+            time.sleep(1)
+
         log(INFO, "configure_train: Training on all %s nodes", len(node_ids))
 
         # Get worker assignments from shard manager
