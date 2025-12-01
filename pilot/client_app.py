@@ -119,8 +119,8 @@ def train(msg: Message, context: Context):
         shard_progress[shard_id] = rows_in_shard
 
         # Check for stop signal (non-blocking)
-        msg = pubsub.get_message(timeout=0)
-        if msg and msg['type'] == 'message':
+        redis_msg = pubsub.get_message(timeout=0)
+        if redis_msg and redis_msg['type'] == 'message':
             log(INFO, f"Round stop signal received after batch {batches_processed}")
             break
 
