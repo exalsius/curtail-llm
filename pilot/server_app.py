@@ -214,6 +214,14 @@ class PilotAvg(Strategy):
 
         for current_round in range(1, int(num_rounds + 1)):
             log(INFO, f"\n[ROUND {current_round}]")
+
+            messages = self.configure_train(
+                current_round,
+                arrays,
+                train_config,
+                grid,
+            )
+
             round_start = time.time()
 
             def _monitor():
@@ -228,15 +236,7 @@ class PilotAvg(Strategy):
             monitor_thread = threading.Thread(target=_monitor, daemon=True)
             monitor_thread.start()
 
-            train_replies = grid.send_and_receive(
-                messages=self.configure_train(
-                    current_round,
-                    arrays,
-                    train_config,
-                    grid,
-                ),
-                timeout=timeout,
-            )
+            train_replies = grid.send_and_receive(messages=messages, timeout=timeout)
 
             monitor_thread.join(timeout=2.0)  # Ensure monitor thread has finished
 
