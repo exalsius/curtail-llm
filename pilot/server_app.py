@@ -217,11 +217,12 @@ class PilotAvg(Strategy):
             round_start = time.time()
 
             def _monitor():
+                log(INFO, f"Round monitor started for ROUND {current_round}")
                 time.sleep(self.round_min_duration)
                 while len(list(grid.get_node_ids())) <= 1:
                     log(INFO, f"Round active since {int(time.time() - round_start)}s, waiting for more clients to join...")
                     time.sleep(10)
-                self.redis_client.publish(f"round:{current_round}:stop", "stop")
+                self.redis_client.publish(f"round:{current_round}:end_round", "END_ROUND")
                 log(INFO, f"Signaling ROUND END after {int(time.time() - round_start)}s with {len(list(grid.get_node_ids()))} connected clients.")
 
             monitor_thread = threading.Thread(target=_monitor, daemon=True)

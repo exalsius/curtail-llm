@@ -75,7 +75,7 @@ def train(msg: Message, context: Context):
 
     # Setup Redis pubsub for stop signal
     pubsub = redis.from_url(redis_url).pubsub()
-    pubsub.subscribe(f"round:{server_round}:stop")
+    pubsub.subscribe(f"round:{server_round}:end_round")
 
     # Training loop
     model.train()
