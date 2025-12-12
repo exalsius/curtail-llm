@@ -43,8 +43,6 @@ Redis must be accessible by all nodes, run via:
 apt-get update
 apt-get install redis-server
 redis-server --daemonize yes
-# redis-cli ping
-# docker run -d -p 6379:6379 redis:latest
 ```
 
 ## Quick Start
@@ -53,14 +51,20 @@ redis-server --daemonize yes
 
 Deploy across multiple physical nodes:
 
-**1. Make sure Redis is running.**
+1. Make sure Redis is running.
+```bash
+redis-server --daemonize yes
+# docker run -d -p 6379:6379 redis:latest
 
-**2. Start Flower SuperLink (coordinator):**
+redis-cli ping
+```
+
+2. Start Flower SuperLink (coordinator):
 ```bash
 flower-superlink --insecure
 ```
 
-**3. Start SuperNodes (workers) on each GPU:**
+3. Start SuperNodes (workers) on each GPU:
 ```bash
 # Node 0
 CUDA_VISIBLE_DEVICES=0 flower-supernode --insecure \
@@ -74,8 +78,7 @@ CUDA_VISIBLE_DEVICES=1 flower-supernode --insecure \
   --clientappio-api-address 127.0.0.1:9095 \
   --node-config "partition-id=1"
 ```
-
-**4. Run the Flower app:**
+4. Run the Flower app:
 ```bash
 flwr run . local-deployment
 ```

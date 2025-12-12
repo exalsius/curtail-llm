@@ -1,8 +1,7 @@
-import io
+import asyncio
 import time
-import threading
 from logging import INFO
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Literal
 
 import redis
 import torch
@@ -18,6 +17,7 @@ from flwr.serverapp.strategy.strategy_utils import (
     validate_message_reply_consistency,
     config_to_str,
 )
+from redis import Redis
 
 from pilot.model import get_model
 from pilot.data import ShardManager
@@ -116,8 +116,7 @@ class PilotAvg(Strategy):
         replies: Iterable[Message],
     ) -> tuple[Optional[ArrayRecord], Optional[MetricRecord]]:
         """Aggregate ArrayRecords and MetricRecords in the received Messages."""
-
-        valid_replies, _ = self._check_and_log_replies(replies, is_train=True)
+        valid_replies, _ = self._check_and_log_replies(replies)
 
         arrays, metrics = None, None
         if valid_replies:
@@ -186,7 +185,7 @@ class PilotAvg(Strategy):
     def aggregate_evaluate(self, server_round, replies) -> tuple[Optional[ArrayRecord], Optional[MetricRecord]]:
         return None, None  # not used, server-side eval only
 
-    def start(
+    async def start(
         self,
         grid: Grid,
         initial_arrays: ArrayRecord,
@@ -197,71 +196,33 @@ class PilotAvg(Strategy):
         evaluate_fn: Optional[callable] = None,
     ):
         """Run time-based federated learning."""
-        log(INFO, "Starting %s strategy:", self.__class__.__name__)
-        log(INFO, "\t├── ArrayRecord (%.2f MB)", sum(len(array.data) for array in initial_arrays.values()) / (1024 ** 2))
-        log(INFO, "\t├── ConfigRecord (train): %s", config_to_str(train_config))
-
+        log(INFO, f"Starting {self.__class__.__name__} strategy:")
+        log(INFO, f"\t├── ArrayRecord ({sum(len(array.data) for array in initial_arrays.values()) / (1024 ** 2):.2f} MB)")
+        log(INFO, f"\t├── ConfigRecord (train): {config_to_str(train_config)}")
         self.summary()
-        log(INFO, "")
-
-        # Initialize if None
         train_config = ConfigRecord() if train_config is None else train_config
-        result = Result()
 
-        t_start = time.time()
+        provisioning_controller = asyncio.create_task(_provisioning_controller(grid))
 
+        start = time.time()
         arrays = initial_arrays
-
         for current_round in range(1, int(num_rounds + 1)):
             log(INFO, f"\n[ROUND {current_round}]")
 
-            messages = self.configure_train(
-                current_round,
-                arrays,
-                train_config,
-                grid,
-            )
-
-            round_start = time.time()
-
-            def _monitor():
-                log(INFO, f"Round monitor started for ROUND {current_round}")
-                time.sleep(self.round_min_duration)
-                while len(list(grid.get_node_ids())) <= 1:
-                    log(INFO, f"Round active since {int(time.time() - round_start)}s, waiting for more clients to join...")
-                    time.sleep(10)
-                self.redis_client.publish(f"round:{current_round}:end_round", "END_ROUND")
-                log(INFO, f"Signaling ROUND END after {int(time.time() - round_start)}s with {len(list(grid.get_node_ids()))} connected clients.")
-
-            monitor_thread = threading.Thread(target=_monitor, daemon=True)
-            monitor_thread.start()
-
+            messages = self.configure_train(current_round, arrays, train_config, grid)
+            round_controller = asyncio.create_task(_round_controller(grid, self.redis_client, self.round_min_duration, current_round))
             train_replies = grid.send_and_receive(messages=messages, timeout=timeout)
+            round_controller.cancel()  # once grid.send_and_receive() has returned, the monitor is obsolete
 
-            monitor_thread.join(timeout=2.0)  # Ensure monitor thread has finished
-
-            agg_arrays, agg_train_metrics = self.aggregate_train(current_round, train_replies)
-
-            # Log training metrics and append to history
-            if agg_arrays is not None:
-                result.arrays = agg_arrays
-                arrays = agg_arrays
+            arrays, agg_train_metrics = self.aggregate_train(current_round, train_replies)
             if agg_train_metrics is not None:
                 log(INFO, "\t└──> Aggregated MetricRecord: %s", agg_train_metrics)
-                result.train_metrics_clientapp[current_round] = agg_train_metrics
 
+        log(INFO, f"\nStrategy execution finished in {time.time() - start:.2f}s")
+        log(INFO, "\nSaving final model to disk...")
+        torch.save(arrays.to_torch_state_dict(), "final_model.pt")
 
-        log(INFO, "\nStrategy execution finished in %.2fs\n", time.time() - t_start)
-        log(INFO, "Final results:\n")
-        for line in io.StringIO(str(result)):
-            log(INFO, "\t%s", line.strip("\n"))
-        log(INFO, "")
-
-        return result
-
-    def _check_and_log_replies(
-        self, replies: Iterable[Message], is_train: bool, validate: bool = True
-    ) -> tuple[list[Message], list[Message]]:
+    def _check_and_log_replies(self, replies: Iterable[Message]) -> tuple[list[Message], list[Message]]:
         """Copied from FedAvg"""
         if not replies:
             return [], []
@@ -275,26 +236,87 @@ class PilotAvg(Strategy):
             else:
                 valid_replies.append(msg)
 
-        log(INFO, "%s: Received %s results and %s failures",
-            "aggregate_train" if is_train else "aggregate_evaluate", len(valid_replies), len(error_replies))
+        log(INFO, "aggregate_train: Received %s results and %s failures", len(valid_replies), len(error_replies))
 
         # Log errors
         for msg in error_replies:
             log(INFO, "\t> Received error in reply from node %d: %s", msg.metadata.src_node_id, msg.error.reason)
 
         # Ensure expected ArrayRecords and MetricRecords are received
-        if validate and valid_replies:
+        if valid_replies:
             validate_message_reply_consistency(
                 replies=[msg.content for msg in valid_replies],
                 weighted_by_key=self.weighted_by_key,
-                check_arrayrecord=is_train,
+                check_arrayrecord=True,
             )
 
         return valid_replies, error_replies
 
 
+class Client:
+    _state: Literal["OFF", "STARTING", "READY", "TRAINING"] = "OFF"
+
+    def maybe_provision(self):
+        if self._state == "OFF":
+            # TODO query forecast
+            below_threshold = False  # TODO define and compare to thresholds
+            if below_threshold:
+                self._state = "STARTING"
+                # TODO provision client
+                asyncio.create_task(self._provisioning_monitor())
+                asyncio.create_task(self._deprovisioning_controller())
+
+    def start_training(self):
+        assert self._state == "READY"
+        self._state = "TRAINING"
+
+    def stop_training(self):
+        assert self._state == "TRAINING"
+        self._state = "READY"
+
+    async def _provisioning_monitor(self):  # checks if node is ready
+        while True:
+            await asyncio.sleep(5)
+            assert self._state == "STARTING"
+            if False: # TODO query provisioning
+                break
+        self._state = "READY"
+
+    async def _deprovisioning_controller(self):  # checks if node should be deprovisioned
+        while True:
+            await asyncio.sleep(3600)  # TODO improve this: we want to check the deprovisioning with enough time left to the end of the hourly billing interval
+            if self._state == "OFF":
+                break
+            # TODO query forecast
+            below_threshold = False  # TODO define and compare to thresholds
+            if below_threshold:
+                # TODO send client-specific stop signal and await return
+                assert self._state == "READY"
+                # TODO deprovision client
+                self._state = "OFF"
+                break
+
+
+async def _provisioning_controller(clients: list[Client]):
+    while True:
+        for client in clients:
+            client.maybe_provision()
+        await asyncio.sleep(5)
+
+
+async def _round_controller(grid: Grid, redis_client: Redis, round_min_duration: float, current_round: int):
+    log(INFO, f"Round monitor started for ROUND {current_round}")
+    start = time.time()
+    await asyncio.sleep(round_min_duration)
+    while active_nodes := len(list(grid.get_node_ids())) <= 1:
+        log(INFO, f"Round active since {int(time.time() - start)}s, waiting for more clients to join...")
+        await asyncio.sleep(10)
+    await redis_client.publish(f"round:{current_round}:end_round", "ROUND END")
+    log(INFO, f"Signaled ROUND END after {int(time.time() - start)}s with {active_nodes} connected clients.")
+
+
 @app.main()
-def main(grid: Grid, context: Context) -> None:
+async def main(grid: Grid, context: Context) -> None:
     """Main entry point for the ServerApp."""
     lr: float = context.run_config["lr"]
     dataset_name: str = context.run_config["dataset_name"]
@@ -350,16 +372,11 @@ def main(grid: Grid, context: Context) -> None:
     max_length = context.run_config.get("max_length", 2048)
     global_model = get_model(model_type, max_length)
 
-    result = strategy.start(
+    await strategy.start(
         grid=grid,
         initial_arrays=ArrayRecord(global_model.state_dict()),
         train_config=ConfigRecord(dict(lr=lr)),
     )
-
-    # Save final model to disk
-    print("\nSaving final model to disk...")
-    state_dict = result.arrays.to_torch_state_dict()
-    torch.save(state_dict, "final_model.pt")
 
     # Finish wandb run
     wandb.finish()
