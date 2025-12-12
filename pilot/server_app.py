@@ -54,6 +54,10 @@ class PilotAvg(Strategy):
         self.wandb_entity = wandb_entity
         self.wandb_run_group = wandb_run_group
 
+        # Client tracking
+        self.clients: dict[str, Client] = {}
+        self.node_id_to_client_name: dict[int, str] = {}
+
     def summary(self) -> None:
         """Log summary configuration of the strategy."""
         log(INFO, "\t└──> Dataset: '%s'", self.dataset_name)
@@ -121,11 +125,9 @@ class PilotAvg(Strategy):
 
         arrays, metrics = None, None
         if valid_replies:
-            reply_contents = [msg.content for msg in valid_replies]
-
-            # Update shard states from worker results
-            for reply_content in reply_contents:
-                metrics: MetricRecord = reply_content["metrics"]
+            for reply in valid_replies:
+                # Update shard states from worker results
+                metrics: MetricRecord = reply.content["metrics"]
                 # Reconstruct shard_updates from two parallel lists
                 shard_ids = metrics["shard_ids"]
                 shard_rows = metrics["shard_rows"]
@@ -138,6 +140,7 @@ class PilotAvg(Strategy):
                       f"{progress['num_complete']}/{progress['num_total']} complete)")
 
             # Default FedAvg aggregation
+            reply_contents = [msg.content for msg in valid_replies]
             arrays = aggregate_arrayrecords(reply_contents, self.weighted_by_key)
             metrics = aggregate_metricrecords(reply_contents, self.weighted_by_key)  # can be customized
 
@@ -203,7 +206,7 @@ class PilotAvg(Strategy):
         self.summary()
         train_config = ConfigRecord() if train_config is None else train_config
 
-        provisioning_controller = asyncio.create_task(_provisioning_controller(grid))
+        provisioning_task = asyncio.create_task(_provisioning_task(self.clients, self.redis_client))
 
         start = time.time()
         arrays = initial_arrays
@@ -219,6 +222,7 @@ class PilotAvg(Strategy):
             if agg_train_metrics is not None:
                 log(INFO, "\t└──> Aggregated MetricRecord: %s", agg_train_metrics)
 
+        provisioning_task.cancel()
         log(INFO, f"\nStrategy execution finished in {time.time() - start:.2f}s")
         log(INFO, "\nSaving final model to disk...")
         torch.save(arrays.to_torch_state_dict(), "final_model.pt")
@@ -257,53 +261,63 @@ class PilotAvg(Strategy):
 @dataclass
 class Client:
     name: str
-    _state: Literal["OFF", "STARTING", "READY", "TRAINING"] = "OFF"
+    _state: Literal["OFF", "STARTING", "IDLE", "TRAINING"] = "OFF"    # , "STOPPING"
 
-    def maybe_provision(self):
+    def maybe_provision(self, grid: Grid):
         if self._state == "OFF":
             # TODO query forecast
             below_threshold = False  # TODO define and compare to thresholds
             if below_threshold:
-                self._state = "STARTING"
-                # TODO provision client
-                asyncio.create_task(self._provisioning_monitor())
-                asyncio.create_task(self._deprovisioning_controller())
+                asyncio.create_task(self._provision(grid))
+
+    def maybe_deprovision(self, redis_client: Redis) -> bool:
+        if self._state in ["STARTING", "IDLE"]:
+            # TODO query forecast
+            below_threshold = False  # TODO define and compare to thresholds
+            if below_threshold:  # TODO should also only deprovision if end of billing interval
+                asyncio.create_task(self._deprovision(redis_client))
+        return False
 
     def start_training(self):
-        assert self._state == "READY"
+        assert self._state == "IDLE", f"Cannot start training: client '{self.name}' is {self._state}, expected IDLE"
         self._state = "TRAINING"
 
     def stop_training(self):
-        assert self._state == "TRAINING"
-        self._state = "READY"
+        assert self._state == "TRAINING", f"Cannot stop training: client '{self.name}' is {self._state}, expected TRAINING"
+        self._state = "IDLE"
 
-    async def _provisioning_monitor(self):  # checks if node is ready
-        while True:
-            await asyncio.sleep(5)
-            assert self._state == "STARTING"
-            if False: # TODO query provisioning
-                break
-        self._state = "READY"
-
-    async def _deprovisioning_controller(self):  # checks if node should be deprovisioned
-        while True:
-            await asyncio.sleep(3600)  # TODO improve this: we want to check the deprovisioning with enough time left to the end of the hourly billing interval
-            if self._state == "OFF":
-                break
-            # TODO query forecast
-            below_threshold = False  # TODO define and compare to thresholds
-            if below_threshold:
-                # TODO send client-specific stop signal and await return
-                assert self._state == "READY"
-                # TODO deprovision client
-                self._state = "OFF"
-                break
+    async def _provision(self, grid: Grid):
+        node_ids = grid.get_node_ids()
+        # TODO: Call provisioning API
 
 
-async def _provisioning_controller(clients: list[Client]):
+
+    async def _deprovision(self, redis_client: Redis):
+        """Gracefully deprovision a client by signaling stop and waiting for completion."""
+        # Wrap up current round in case the client is still training
+        if self._state == "TRAINING":
+            log(INFO, f"Signaling client '{self.name}' to stop training")
+            await redis_client.publish(f"{self.name}:stop", "DEPROVISION {self.name}")
+    
+            # Wait for client to become IDLE (set by train loop after results have been returned)
+            wait_start = time.time()
+            while self._state == "TRAINING" and (time.time() - wait_start) < 60:
+                await asyncio.sleep(1)
+            if self._state == "TRAINING":
+                log(INFO, f"Client '{self.name}' did not respond within timeout")
+
+        assert self._state == "IDLE"
+        # TODO: Call deprovisioning API
+        log(INFO, f"Deprovisioning client '{self.name}'")
+        self._state = "OFF"
+
+
+async def _provisioning_task(clients: dict[str, Client], redis_client: Redis):
+    """Monitor clients for provisioning and deprovisioning decisions."""
     while True:
-        for client in clients:
+        for client in clients.values():
             client.maybe_provision()
+            client.maybe_deprovision(redis_client)
         await asyncio.sleep(5)
 
 
@@ -314,7 +328,7 @@ async def _round_controller(grid: Grid, redis_client: Redis, round_min_duration:
     while active_nodes := len(list(grid.get_node_ids())) <= 1:
         log(INFO, f"Round active since {int(time.time() - start)}s, waiting for more clients to join...")
         await asyncio.sleep(10)
-    await redis_client.publish(f"round:{current_round}:end_round", "ROUND END")
+    await redis_client.publish(f"round:{current_round}:stop", f"END ROUND {current_round}")
     log(INFO, f"Signaled ROUND END after {int(time.time() - start)}s with {active_nodes} connected clients.")
 
 

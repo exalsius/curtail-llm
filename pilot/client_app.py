@@ -18,6 +18,7 @@ app = ClientApp()
 @app.train()
 def train(msg: Message, context: Context):
     client_id = context.node_config["partition-id"]
+    node_name = context.node_config["name"]
     config: ConfigRecord = msg.content["config"]
 
     if config.get("debug_port_client") and client_id == 0:
@@ -75,7 +76,8 @@ def train(msg: Message, context: Context):
 
     # Setup Redis pubsub for stop signal
     pubsub = redis.from_url(redis_url).pubsub()
-    pubsub.subscribe(f"round:{server_round}:end_round")
+    pubsub.subscribe(f"round:{server_round}:stop")
+    pubsub.subscribe(f"{node_name}:stop")
 
     # Training loop
     model.train()
@@ -121,7 +123,7 @@ def train(msg: Message, context: Context):
         # Check for stop signal (non-blocking)
         redis_msg = pubsub.get_message(timeout=0)
         if redis_msg and redis_msg['type'] == 'message':
-            log(INFO, f"Round stop signal received after batch {batches_processed}")
+            log(INFO, f"Stop signal received ({redis_msg['data'].decode('utf-8')}) after batch {batches_processed}")
             break
 
     # Flush gradients
@@ -146,6 +148,7 @@ def train(msg: Message, context: Context):
             "arrays": ArrayRecord(model.state_dict()),
             "metrics": MetricRecord({
                 "client_id": client_id,
+                "node_name": node_name,
                 "train_loss": avg_loss,
                 "batches_processed": batches_processed,
                 "total_rows_processed": total_rows_processed,
