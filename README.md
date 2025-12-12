@@ -70,23 +70,23 @@ flower-superlink --insecure
 CUDA_VISIBLE_DEVICES=0 flower-supernode --insecure \
   --superlink 127.0.0.1:9092 \
   --clientappio-api-address 127.0.0.1:9094 \
-  --node-config "partition-id=0"
+  --node-config 'name="hyperstack" partition-id=0' 
 
 # Node 1
 CUDA_VISIBLE_DEVICES=1 flower-supernode --insecure \
   --superlink 127.0.0.1:9092 \
   --clientappio-api-address 127.0.0.1:9095 \
-  --node-config "partition-id=1"
+  --node-config 'name="amd" partition-id=1'
 ```
 4. Run the Flower app:
 ```bash
-flwr run . local-deployment
+flwr run . local-deployment --stream
 ```
 
 You can override config values from command line:
 
 ```bash
-flwr run . local-deployment --run-config "lr=0.0005"
+flwr run . local-deployment --run-config "lr=0.0005" --stream
 ```
 
 ### Vanilla nanochat Training

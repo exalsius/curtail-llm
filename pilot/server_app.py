@@ -1,5 +1,6 @@
 import asyncio
 import time
+from dataclasses import dataclass
 from logging import INFO
 from typing import Iterable, Optional, Literal
 
@@ -253,7 +254,9 @@ class PilotAvg(Strategy):
         return valid_replies, error_replies
 
 
+@dataclass
 class Client:
+    name: str
     _state: Literal["OFF", "STARTING", "READY", "TRAINING"] = "OFF"
 
     def maybe_provision(self):
@@ -316,7 +319,7 @@ async def _round_controller(grid: Grid, redis_client: Redis, round_min_duration:
 
 
 @app.main()
-async def main(grid: Grid, context: Context) -> None:
+def main(grid: Grid, context: Context) -> None:
     """Main entry point for the ServerApp."""
     lr: float = context.run_config["lr"]
     dataset_name: str = context.run_config["dataset_name"]
@@ -372,11 +375,11 @@ async def main(grid: Grid, context: Context) -> None:
     max_length = context.run_config.get("max_length", 2048)
     global_model = get_model(model_type, max_length)
 
-    await strategy.start(
+    asyncio.run(strategy.start(
         grid=grid,
         initial_arrays=ArrayRecord(global_model.state_dict()),
         train_config=ConfigRecord(dict(lr=lr)),
-    )
+    ))
 
     # Finish wandb run
     wandb.finish()
