@@ -66,6 +66,11 @@ wandb_project = "pilot_flwr"
 # debug_port_server = 5681
 # debug_port_client = 5682
 
+clients = [
+    {name = "hyperstack"},
+    {name = "amd"}
+]
+
 # ===== Nanochat Configuration (GPT Pretraining) =====
 # Original nanochat hyperparameters from karpathy/nanochat
 # Baseline: 4h on 8xH100 for 11.2B tokens (560M param model)

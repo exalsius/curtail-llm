@@ -32,6 +32,7 @@ class PilotAvg(Strategy):
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     def __init__(
         self,
+        clients: dict[str, Client],
         dataset_name: str,
         num_shards: int,
         debug_port_client: bool,
@@ -42,6 +43,7 @@ class PilotAvg(Strategy):
         wandb_entity: Optional[str] = None,
         wandb_run_group: Optional[str] = None,
     ) -> None:
+        self.clients: dict[str, Client] = clients
         self.dataset_name = dataset_name
         self.num_shards = num_shards
         self.shard_manager = ShardManager(num_shards=num_shards)
@@ -53,10 +55,6 @@ class PilotAvg(Strategy):
         self.wandb_project = wandb_project
         self.wandb_entity = wandb_entity
         self.wandb_run_group = wandb_run_group
-
-        # Client tracking
-        self.clients: dict[str, Client] = {}
-        self.node_id_to_client_name: dict[int, str] = {}
 
     def summary(self) -> None:
         """Log summary configuration of the strategy."""
@@ -271,7 +269,7 @@ class Client:
                 asyncio.create_task(self._provision(grid))
 
     def maybe_deprovision(self, redis_client: Redis) -> bool:
-        if self._state in ["STARTING", "IDLE"]:
+        if self._state != ["OFF"]:
             # TODO query forecast
             below_threshold = False  # TODO define and compare to thresholds
             if below_threshold:  # TODO should also only deprovision if end of billing interval
@@ -373,7 +371,13 @@ def main(grid: Grid, context: Context) -> None:
 
     redis_client = redis.from_url(redis_url)
 
+    # Create clients from config
+    clients = context.run_config["clients"]
+    clients = {client_config["name"]: Client(name=client_config["name"]) for client_config in clients}
+    log(INFO, "Configured clients: %s", list(clients.keys()))
+
     strategy = PilotAvg(
+        clients=clients,
         dataset_name=dataset_name,
         num_shards=num_shards,
         debug_port_client=context.run_config.get("debug_port_client", None),
