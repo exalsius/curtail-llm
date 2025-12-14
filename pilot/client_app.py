@@ -159,3 +159,10 @@ def train(msg: Message, context: Context):
         }),
         reply_to=msg,
     )
+
+
+@app.query()
+def query(msg: Message, context: Context):
+    name = context.node_config["name"]
+    log(INFO, f"HI! I'm CLIENT {name}")
+    return Message(content=RecordDict({"config": ConfigRecord({"name": name})}), reply_to=msg)

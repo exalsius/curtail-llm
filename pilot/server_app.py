@@ -31,6 +31,7 @@ app = ServerApp()
 class Client:
     name: str
     host: str  # TODO currently unused
+    node_id: Optional[int] = None  # TODO
     _state: Literal["OFF", "STARTING", "IDLE", "TRAINING"] = "OFF"    # , "STOPPING"
 
     def maybe_provision(self):
@@ -120,6 +121,22 @@ class PilotAvg(Strategy):
         while len(node_ids := list(grid.get_node_ids())) < 1:
             log(INFO, "Waiting for a client to connect")
             time.sleep(1)
+
+
+        #################################################
+        log(INFO, f"Querying all {len(node_ids)} connected nodes for their names...")
+        messages = []
+        for node_id in node_ids:
+            content = RecordDict({"config": ConfigRecord({})})
+            messages.append(Message(content=content, message_type=MessageType.QUERY, dst_node_id=node_id))
+        query_replies = grid.send_and_receive(messages=messages, timeout=10)
+        for reply in query_replies:
+            client_name: str = reply.content["config"]["name"]
+            log(INFO, f" - Node {reply.metadata.src_node_id}: '{client_name}'")
+            self.clients[client_name]._state = "IDLE"
+            self.clients[client_name].node_id = reply.metadata.src_node_id
+        #################################################
+
 
         log(INFO, "configure_train: Training on all %s nodes", len(node_ids))
 
