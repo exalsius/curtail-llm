@@ -127,7 +127,7 @@ class PilotAvg(Strategy):
                 # Update shard states from worker results
                 metrics: MetricRecord = reply.content["metrics"]
                 # Reconstruct shard_updates from two parallel lists
-                shard_ids = metrics["shard_ids"]
+                shard_ids = metrics["shard_ids"]  # TODO refactor s this happens within the shard manager
                 shard_rows = metrics["shard_rows"]
                 shard_updates = list(zip(shard_ids, shard_rows))
                 self.shard_manager.update(shard_updates)
@@ -261,12 +261,14 @@ class Client:
     name: str
     _state: Literal["OFF", "STARTING", "IDLE", "TRAINING"] = "OFF"    # , "STOPPING"
 
-    def maybe_provision(self, grid: Grid):
+    def maybe_provision(self):
         if self._state == "OFF":
             # TODO query forecast
             below_threshold = False  # TODO define and compare to thresholds
             if below_threshold:
-                asyncio.create_task(self._provision(grid))
+                self._state = "STARTING"
+                # TODO: Call provisioning API
+                # State transitions to IDLE happens in the server loop once client connects to grid
 
     def maybe_deprovision(self, redis_client: Redis) -> bool:
         if self._state != ["OFF"]:
@@ -283,12 +285,6 @@ class Client:
     def stop_training(self):
         assert self._state == "TRAINING", f"Cannot stop training: client '{self.name}' is {self._state}, expected TRAINING"
         self._state = "IDLE"
-
-    async def _provision(self, grid: Grid):
-        node_ids = grid.get_node_ids()
-        # TODO: Call provisioning API
-
-
 
     async def _deprovision(self, redis_client: Redis):
         """Gracefully deprovision a client by signaling stop and waiting for completion."""
@@ -372,8 +368,8 @@ def main(grid: Grid, context: Context) -> None:
     redis_client = redis.from_url(redis_url)
 
     # Create clients from config
-    clients = context.run_config["clients"]
-    clients = {client_config["name"]: Client(name=client_config["name"]) for client_config in clients}
+    clients_config = context.run_config["clients"]
+    clients = {name: Client(name=name) for name in clients_config.keys()}
     log(INFO, "Configured clients: %s", list(clients.keys()))
 
     strategy = PilotAvg(
