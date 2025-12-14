@@ -1,5 +1,6 @@
 import asyncio
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from logging import INFO
 from typing import Iterable, Optional, Literal
@@ -24,6 +25,57 @@ from pilot.model import get_model
 from pilot.data import ShardManager
 
 app = ServerApp()
+
+
+@dataclass
+class Client:
+    name: str
+    host: str  # TODO currently unused
+    _state: Literal["OFF", "STARTING", "IDLE", "TRAINING"] = "OFF"    # , "STOPPING"
+
+    def maybe_provision(self):
+        if self._state == "OFF":
+            # TODO query forecast
+            below_threshold = False  # TODO define and compare to thresholds
+            if below_threshold:
+                self._state = "STARTING"
+                # TODO: Call provisioning API
+                # State transitions to IDLE happens in the server loop once client connects to grid
+
+    def maybe_deprovision(self, redis_client: Redis) -> bool:
+        if self._state != ["OFF"]:
+            # TODO query forecast
+            below_threshold = False  # TODO define and compare to thresholds
+            if below_threshold:  # TODO should also only deprovision if end of billing interval
+                asyncio.create_task(self._deprovision(redis_client))
+        return False
+
+    def start_training(self):
+        assert self._state == "IDLE", f"Cannot start training: client '{self.name}' is {self._state}, expected IDLE"
+        self._state = "TRAINING"
+
+    def stop_training(self):
+        assert self._state == "TRAINING", f"Cannot stop training: client '{self.name}' is {self._state}, expected TRAINING"
+        self._state = "IDLE"
+
+    async def _deprovision(self, redis_client: Redis):
+        """Gracefully deprovision a client by signaling stop and waiting for completion."""
+        # Wrap up current round in case the client is still training
+        if self._state == "TRAINING":
+            log(INFO, f"Signaling client '{self.name}' to stop training")
+            await redis_client.publish(f"{self.name}:stop", "DEPROVISION {self.name}")
+
+            # Wait for client to become IDLE (set by train loop after results have been returned)
+            wait_start = time.time()
+            while self._state == "TRAINING" and (time.time() - wait_start) < 60:
+                await asyncio.sleep(1)
+            if self._state == "TRAINING":
+                log(INFO, f"Client '{self.name}' did not respond within timeout")
+
+        assert self._state == "IDLE"
+        # TODO: Call deprovisioning API
+        log(INFO, f"Deprovisioning client '{self.name}'")
+        self._state = "OFF"
 
 
 class PilotAvg(Strategy):
@@ -256,56 +308,6 @@ class PilotAvg(Strategy):
         return valid_replies, error_replies
 
 
-@dataclass
-class Client:
-    name: str
-    _state: Literal["OFF", "STARTING", "IDLE", "TRAINING"] = "OFF"    # , "STOPPING"
-
-    def maybe_provision(self):
-        if self._state == "OFF":
-            # TODO query forecast
-            below_threshold = False  # TODO define and compare to thresholds
-            if below_threshold:
-                self._state = "STARTING"
-                # TODO: Call provisioning API
-                # State transitions to IDLE happens in the server loop once client connects to grid
-
-    def maybe_deprovision(self, redis_client: Redis) -> bool:
-        if self._state != ["OFF"]:
-            # TODO query forecast
-            below_threshold = False  # TODO define and compare to thresholds
-            if below_threshold:  # TODO should also only deprovision if end of billing interval
-                asyncio.create_task(self._deprovision(redis_client))
-        return False
-
-    def start_training(self):
-        assert self._state == "IDLE", f"Cannot start training: client '{self.name}' is {self._state}, expected IDLE"
-        self._state = "TRAINING"
-
-    def stop_training(self):
-        assert self._state == "TRAINING", f"Cannot stop training: client '{self.name}' is {self._state}, expected TRAINING"
-        self._state = "IDLE"
-
-    async def _deprovision(self, redis_client: Redis):
-        """Gracefully deprovision a client by signaling stop and waiting for completion."""
-        # Wrap up current round in case the client is still training
-        if self._state == "TRAINING":
-            log(INFO, f"Signaling client '{self.name}' to stop training")
-            await redis_client.publish(f"{self.name}:stop", "DEPROVISION {self.name}")
-    
-            # Wait for client to become IDLE (set by train loop after results have been returned)
-            wait_start = time.time()
-            while self._state == "TRAINING" and (time.time() - wait_start) < 60:
-                await asyncio.sleep(1)
-            if self._state == "TRAINING":
-                log(INFO, f"Client '{self.name}' did not respond within timeout")
-
-        assert self._state == "IDLE"
-        # TODO: Call deprovisioning API
-        log(INFO, f"Deprovisioning client '{self.name}'")
-        self._state = "OFF"
-
-
 async def _provisioning_task(clients: dict[str, Client], redis_client: Redis):
     """Monitor clients for provisioning and deprovisioning decisions."""
     while True:
@@ -368,8 +370,7 @@ def main(grid: Grid, context: Context) -> None:
     redis_client = redis.from_url(redis_url)
 
     # Create clients from config
-    clients_config = context.run_config["clients"]
-    clients = {name: Client(name=name) for name in clients_config.keys()}
+    clients = _clients_from_run_config(context.run_config)
     log(INFO, "Configured clients: %s", list(clients.keys()))
 
     strategy = PilotAvg(
@@ -398,3 +399,12 @@ def main(grid: Grid, context: Context) -> None:
     # Finish wandb run
     wandb.finish()
     log(INFO, "Wandb run finished")
+
+
+def _clients_from_run_config(flat_dict: dict) -> dict[str, Client]:
+    fields_by_client = defaultdict(dict)
+    for key, value in flat_dict.items():
+        if key.startswith("clients."):
+            _, client_name, field = key.split(".")
+            fields_by_client[client_name][field] = value
+    return {client_name: Client(name=client_name, **fields) for client_name, fields in fields_by_client.items()}
