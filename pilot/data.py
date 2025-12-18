@@ -59,20 +59,14 @@ class ShardManager:
         # Sort by processed_rows ascending (in-progress first)
         incomplete_shards.sort(key=lambda x: x[1])
 
-        # Distribute shards evenly among workers (round-robin)
-        assignments = {node_id: [] for node_id in node_ids}
+        # Distribute shards evenly among workers (round-robin) in gRPC format
+        assignments = {node_id: {"shard_ids": [], "shard_starts": []} for node_id in node_ids}
         for i, (shard_id, start_row) in enumerate(incomplete_shards):
             node_id = node_ids[i % len(node_ids)]
-            assignments[node_id].append((shard_id, start_row))
+            assignments[node_id]["shard_ids"].append(shard_id)
+            assignments[node_id]["shard_starts"].append(start_row)
 
-        # Convert to gRPC-compatible format
-        return {
-            node_id: {
-                "shard_ids": [sid for sid, _ in shard_list],
-                "shard_starts": [start for _, start in shard_list],
-            }
-            for node_id, shard_list in assignments.items()
-        }
+        return assignments
 
     def update(self, shard_ids: list[int], shard_rows: list[int]):
         """Update multiple shard states after training.
