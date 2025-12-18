@@ -135,13 +135,6 @@ class PilotAvg(Strategy):
         progress = self.shard_manager.get_progress_summary()
         log(INFO, f"Shard progress: {progress['progress']:.1%} ({progress['num_complete']}/{progress['num_total']} complete)")
 
-        for node_id, shard_list in assignments.items():
-            if shard_list:
-                shard_summary = ", ".join(f"shard_{sid}@{start}" for sid, start in shard_list)
-                log(INFO, f"└──> Client {node_id}: {len(shard_list)} shards [{shard_summary}]")
-            else:
-                log(INFO, f"└──> Client {node_id}: No shards (training complete)")
-
         base_config["server_round"] = server_round
         base_config["dataset_name"] = self.dataset_name
         base_config["num_shards"] = self.num_shards
@@ -157,14 +150,9 @@ class PilotAvg(Strategy):
 
         messages = []
         for node_id in node_ids:
-            shard_list = assignments[node_id]
-            # Convert list of tuples to two parallel lists for serialization
-            shard_ids = [sid for sid, _ in shard_list]
-            shard_starts = [start for _, start in shard_list]
             config = ConfigRecord({
                 **base_config,
-                "shard_ids": shard_ids,
-                "shard_starts": shard_starts,
+                **assignments[node_id],
             })
             record = RecordDict({"arrays": arrays, "config": config})
             message = Message(content=record, message_type=MessageType.TRAIN, dst_node_id=node_id)
@@ -185,11 +173,7 @@ class PilotAvg(Strategy):
             for reply in valid_replies:
                 # Update shard states from worker results
                 metrics: MetricRecord = reply.content["metrics"]
-                # Reconstruct shard_updates from two parallel lists
-                shard_ids = metrics["shard_ids"]  # TODO refactor s this happens within the shard manager
-                shard_rows = metrics["shard_rows"]
-                shard_updates = list(zip(shard_ids, shard_rows))
-                self.shard_manager.update(shard_updates)
+                self.shard_manager.update(metrics["shard_ids"], metrics["shard_rows"])
 
             progress = self.shard_manager.get_progress_summary()
             log(INFO, f"[Round {server_round}] Shard progress: {progress['progress']:.1%} "

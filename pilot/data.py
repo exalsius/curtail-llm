@@ -43,7 +43,7 @@ class ShardManager:
         in-progress shards first, then unstarted ones.
 
         Returns:
-            dict: {node_id: [(shard_id, start_row), ...]}
+            dict: {node_id: {"shard_ids": [...], "shard_starts": [...]}}
         """
         # Get incomplete shards (processed_rows < total_rows)
         incomplete_shards = [
@@ -54,7 +54,7 @@ class ShardManager:
 
         if not incomplete_shards:
             # All shards complete, return empty assignments
-            return {node_id: [] for node_id in node_ids}
+            return {node_id: {"shard_ids": [], "shard_starts": []} for node_id in node_ids}
 
         # Sort by processed_rows ascending (in-progress first)
         incomplete_shards.sort(key=lambda x: x[1])
@@ -65,15 +65,23 @@ class ShardManager:
             node_id = node_ids[i % len(node_ids)]
             assignments[node_id].append((shard_id, start_row))
 
-        return assignments
+        # Convert to gRPC-compatible format
+        return {
+            node_id: {
+                "shard_ids": [sid for sid, _ in shard_list],
+                "shard_starts": [start for _, start in shard_list],
+            }
+            for node_id, shard_list in assignments.items()
+        }
 
-    def update(self, shard_updates: list[tuple[int, int]]):
+    def update(self, shard_ids: list[int], shard_rows: list[int]):
         """Update multiple shard states after training.
 
         Args:
-            shard_updates: List of (shard_id, rows_processed) tuples
+            shard_ids: List of shard IDs
+            shard_rows: List of rows processed for each shard
         """
-        for shard_id, rows_processed in shard_updates:
+        for shard_id, rows_processed in zip(shard_ids, shard_rows):
             self.shard_states[shard_id]["processed_rows"] += rows_processed
 
     def is_complete(self) -> bool:
