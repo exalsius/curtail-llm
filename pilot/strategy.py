@@ -25,7 +25,8 @@ class Client:
     node_id: Optional[int] = None  # TODO
     _state: Literal["OFF", "STARTING", "IDLE", "TRAINING"] = "OFF"    # , "STOPPING"
 
-    def maybe_provision(self):
+    def update_provisioning(self, redis_client):
+        # Check whether the client should be provisioned
         if self._state == "OFF":
             # TODO query forecast
             below_threshold = False  # TODO define and compare to thresholds
@@ -33,14 +34,12 @@ class Client:
                 self._state = "STARTING"
                 # TODO: Call provisioning API
                 # State transitions to IDLE happens in the server loop once client connects to grid
-
-    def maybe_deprovision(self, redis_client: Redis) -> bool:
-        if self._state != ["OFF"]:
+        # Check whether the client should be deprovisioned
+        else:
             # TODO query forecast
             below_threshold = False  # TODO define and compare to thresholds
             if below_threshold:  # TODO should also only deprovision if end of billing interval
                 asyncio.create_task(self._deprovision(redis_client))
-        return False
 
     def start_training(self):
         assert self._state == "IDLE", f"Cannot start training: client '{self.name}' is {self._state}, expected IDLE"
@@ -320,8 +319,7 @@ async def _provisioning_task(clients: dict[str, Client], redis_client: Redis):
     """Monitor clients for provisioning and deprovisioning decisions."""
     while True:
         for client in clients.values():
-            client.maybe_provision()
-            client.maybe_deprovision(redis_client)
+            client.update_provisioning(redis_client)
         await asyncio.sleep(5)
 
 
