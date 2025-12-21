@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from logging import INFO
 from typing import Optional, Literal, Iterable
 
-import exalsius_api_client as ex
+import exalsius_api_client as exls
 import redis
 import torch
 import wandb
@@ -18,16 +18,19 @@ from redis import Redis
 
 from pilot.data import ShardManager
 
+FlwrNodeId = int
+ExlsNodeId = str
+
 
 @dataclass
 class Client:
     name: str
     host: str  # TODO currently unused
-    node_id: Optional[int] = None  # Flower node_id, set when client connects
+    flwr_node_id: Optional[FlwrNodeId] = None  # Set when client connects to Flower Grid
     _state: Literal["OFF", "STARTING", "IDLE", "TRAINING"] = "OFF"
 
     def update_provisioning(
-        self, redis_client: Redis, clusters_api: ex.ClustersApi, cluster_id: str, exalsius_node_id: str
+        self, redis_client: Redis, clusters_api: exls.ClustersApi, cluster_id: str, exls_node_id: ExlsNodeId
     ):
         # Check whether the client should be provisioned
         if self._state == "OFF":
@@ -35,17 +38,17 @@ class Client:
             below_threshold = False  # TODO define and compare to thresholds
             if below_threshold:
                 self._state = "STARTING"
-                clusters_api.add_nodes(cluster_id, ex.ClusterAddNodeRequest(
-                    nodes_to_add=[ex.ClusterNodeToAdd(node_id=exalsius_node_id, node_role="WORKER")]
+                clusters_api.add_nodes(cluster_id, exls.ClusterAddNodeRequest(
+                    nodes_to_add=[exls.ClusterNodeToAdd(node_id=exls_node_id, node_role="WORKER")]
                 ))
-                log(INFO, f"Provisioning client '{self.name}' (node {exalsius_node_id})")
+                log(INFO, f"Provisioning client '{self.name}' (Exalsius node {exls_node_id})")
                 # State transitions to IDLE happens in the server loop once client connects to grid
         # Check whether the client should be deprovisioned
         else:
             # TODO query forecast
             below_threshold = False  # TODO define and compare to thresholds
             if below_threshold:  # TODO should also only deprovision if end of billing interval
-                asyncio.create_task(self._deprovision(redis_client, clusters_api, cluster_id, exalsius_node_id))
+                asyncio.create_task(self._deprovision(redis_client, clusters_api, cluster_id, exls_node_id))
 
     def start_training(self):
         assert self._state == "IDLE", f"Cannot start training: client '{self.name}' is {self._state}, expected IDLE"
@@ -56,7 +59,7 @@ class Client:
         self._state = "IDLE"
 
     async def _deprovision(
-        self, redis_client: Redis, clusters_api: ex.ClustersApi, cluster_id: str, exalsius_node_id: str
+        self, redis_client: Redis, clusters_api: exls.ClustersApi, cluster_id: str, exls_node_id: ExlsNodeId
     ):
         """Gracefully deprovision a client by signaling stop and waiting for completion."""
         # Wrap up current round in case the client is still training
@@ -72,8 +75,8 @@ class Client:
                 log(INFO, f"Client '{self.name}' did not respond within timeout")
 
         assert self._state == "IDLE"
-        clusters_api.delete_node_from_cluster(cluster_id, exalsius_node_id)
-        log(INFO, f"Deprovisioned client '{self.name}' (node {exalsius_node_id})")
+        clusters_api.delete_node_from_cluster(cluster_id, exls_node_id)
+        log(INFO, f"Deprovisioned client '{self.name}' (Exalsius node {exls_node_id})")
         self._state = "OFF"
 
 
@@ -90,9 +93,9 @@ class PilotAvg(Strategy):
         redis_url: str,
         redis_client: redis.Redis,
         round_min_duration: int,
-        clusters_api: ex.ClustersApi,
+        clusters_api: exls.ClustersApi,
         cluster_id: str,
-        node_id_mapping: dict[str, str],  # client_name -> exalsius_node_id
+        node_id_mapping: dict[str, ExlsNodeId],  # client_name -> exls_node_id
         wandb_project: Optional[str] = None,
         wandb_entity: Optional[str] = None,
         wandb_run_group: Optional[str] = None,
@@ -122,30 +125,30 @@ class PilotAvg(Strategy):
         self, server_round: int, arrays: ArrayRecord, base_config: ConfigRecord, grid: Grid
     ) -> Iterable[Message]:
         """Configure the next round of federated training."""
-        while len(node_ids := list(grid.get_node_ids())) < 1:
+        while len(flwr_node_ids := list(grid.get_node_ids())) < 1:
             log(INFO, "Waiting for a client to connect")
             time.sleep(1)
 
 
         #################################################
-        log(INFO, f"Querying all {len(node_ids)} connected nodes for their names...")
+        log(INFO, f"Querying all {len(flwr_node_ids)} connected Flower nodes for their names...")
         messages = []
-        for node_id in node_ids:
+        for flwr_node_id in flwr_node_ids:
             content = RecordDict({"config": ConfigRecord({})})
-            messages.append(Message(content=content, message_type=MessageType.QUERY, dst_node_id=node_id))
+            messages.append(Message(content=content, message_type=MessageType.QUERY, dst_node_id=flwr_node_id))
         query_replies = grid.send_and_receive(messages=messages, timeout=10)
         for reply in query_replies:
             client_name: str = reply.content["config"]["name"]
-            log(INFO, f" - Node {reply.metadata.src_node_id}: '{client_name}'")
+            log(INFO, f" - Flower node {reply.metadata.src_node_id}: '{client_name}'")
             self.clients[client_name]._state = "IDLE"
-            self.clients[client_name].node_id = reply.metadata.src_node_id
+            self.clients[client_name].flwr_node_id = reply.metadata.src_node_id
         #################################################
 
 
-        log(INFO, "configure_train: Training on all %s nodes", len(node_ids))
+        log(INFO, "configure_train: Training on all %s Flower nodes", len(flwr_node_ids))
 
         # Get worker assignments from shard manager
-        assignments = self.shard_manager.assign_workers(node_ids)
+        assignments = self.shard_manager.assign_workers(flwr_node_ids)
         progress = self.shard_manager.get_progress_summary()
         log(INFO, f"Shard progress: {progress['progress']:.1%} ({progress['num_complete']}/{progress['num_total']} complete)")
 
@@ -163,13 +166,13 @@ class PilotAvg(Strategy):
             base_config["wandb_entity"] = self.wandb_entity
 
         messages = []
-        for node_id in node_ids:
+        for flwr_node_id in flwr_node_ids:
             config = ConfigRecord({
                 **base_config,
-                **assignments[node_id],
+                **assignments[flwr_node_id],
             })
             record = RecordDict({"arrays": arrays, "config": config})
-            message = Message(content=record, message_type=MessageType.TRAIN, dst_node_id=node_id)
+            message = Message(content=record, message_type=MessageType.TRAIN, dst_node_id=flwr_node_id)
             messages.append(message)
 
         return messages
@@ -318,9 +321,9 @@ class PilotAvg(Strategy):
 async def _provisioning_task(
     clients: dict[str, Client],
     redis_client: Redis,
-    clusters_api: ex.ClustersApi,
+    clusters_api: exls.ClustersApi,
     cluster_id: str,
-    node_id_mapping: dict[str, str],
+    node_id_mapping: dict[str, ExlsNodeId],
 ):
     """Monitor clients for provisioning and deprovisioning decisions."""
     while True:
@@ -333,8 +336,8 @@ async def _round_controller(grid: Grid, redis_client: Redis, round_min_duration:
     log(INFO, f"Round monitor started for ROUND {current_round}")
     start = time.time()
     await asyncio.sleep(round_min_duration)
-    while active_nodes := len(list(grid.get_node_ids())) <= 1:
+    while active_flwr_nodes := len(list(grid.get_node_ids())) <= 1:
         log(INFO, f"Round active since {int(time.time() - start)}s, waiting for more clients to join...")
         await asyncio.sleep(10)
     await redis_client.publish(f"round:{current_round}:stop", f"END ROUND {current_round}")
-    log(INFO, f"Signaled ROUND END after {int(time.time() - start)}s with {active_nodes} connected clients.")
+    log(INFO, f"Signaled ROUND END after {int(time.time() - start)}s with {active_flwr_nodes} connected Flower clients.")

@@ -11,6 +11,8 @@ from flwr.common import log
 from nanochat.common import get_base_dir
 from nanochat.tokenizer import get_tokenizer
 
+FlwrNodeId = int
+
 
 class ShardManager:
     """Manages multiple data shards, tracking progress through the dataset."""
@@ -36,14 +38,14 @@ class ShardManager:
                 "processed_rows": 0,
             }
 
-    def assign_workers(self, node_ids: list[int]):
+    def assign_workers(self, flwr_node_ids: list[FlwrNodeId]):
         """Assign workers to shards with least progress.
 
         Distributes incomplete shards evenly among workers, prioritizing
         in-progress shards first, then unstarted ones.
 
         Returns:
-            dict: {node_id: {"shard_ids": [...], "shard_starts": [...]}}
+            dict: {flwr_node_id: {"shard_ids": [...], "shard_starts": [...]}}
         """
         # Get incomplete shards (processed_rows < total_rows)
         incomplete_shards = [
@@ -54,17 +56,17 @@ class ShardManager:
 
         if not incomplete_shards:
             # All shards complete, return empty assignments
-            return {node_id: {"shard_ids": [], "shard_starts": []} for node_id in node_ids}
+            return {flwr_node_id: {"shard_ids": [], "shard_starts": []} for flwr_node_id in flwr_node_ids}
 
         # Sort by processed_rows ascending (in-progress first)
         incomplete_shards.sort(key=lambda x: x[1])
 
         # Distribute shards evenly among workers (round-robin) in gRPC format
-        assignments = {node_id: {"shard_ids": [], "shard_starts": []} for node_id in node_ids}
+        assignments = {flwr_node_id: {"shard_ids": [], "shard_starts": []} for flwr_node_id in flwr_node_ids}
         for i, (shard_id, start_row) in enumerate(incomplete_shards):
-            node_id = node_ids[i % len(node_ids)]
-            assignments[node_id]["shard_ids"].append(shard_id)
-            assignments[node_id]["shard_starts"].append(start_row)
+            flwr_node_id = flwr_node_ids[i % len(flwr_node_ids)]
+            assignments[flwr_node_id]["shard_ids"].append(shard_id)
+            assignments[flwr_node_id]["shard_starts"].append(start_row)
 
         return assignments
 
