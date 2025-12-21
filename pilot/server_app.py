@@ -10,6 +10,7 @@ from flwr.server.grid.grid import Grid
 from flwr.serverapp import ServerApp
 
 from pilot.model import get_model
+from pilot.provisioner import ExlsProvisioner
 from pilot.strategy import Client, PilotAvg
 
 app = ServerApp()
@@ -56,9 +57,12 @@ def main(grid: Grid, context: Context) -> None:
 
     redis_client = redis.from_url(redis_url)
 
-    # Create clients from config
-    clients = _clients_from_run_config(context.run_config)
+    # Create clients and provisioner from config
+    clients, node_id_mapping = _clients_from_run_config(context.run_config)
     log(INFO, "Configured clients: %s", list(clients.keys()))
+
+    exls_cluster_id: str = context.run_config["exls_cluster_id"]
+    provisioner = ExlsProvisioner(exls_cluster_id, node_id_mapping)
 
     strategy = PilotAvg(
         clients=clients,
@@ -68,6 +72,7 @@ def main(grid: Grid, context: Context) -> None:
         redis_url=redis_url,
         redis_client=redis_client,
         round_min_duration=round_min_duration,
+        provisioner=provisioner,
         wandb_project=wandb_project,
         wandb_entity=wandb_entity,
         wandb_run_group=run_name,
@@ -88,10 +93,18 @@ def main(grid: Grid, context: Context) -> None:
     log(INFO, "Wandb run finished")
 
 
-def _clients_from_run_config(flat_dict: dict) -> dict[str, Client]:
+def _clients_from_run_config(flat_dict: dict) -> tuple[dict[str, Client], dict[str, str]]:
     fields_by_client = defaultdict(dict)
     for key, value in flat_dict.items():
         if key.startswith("clients."):
             _, client_name, field = key.split(".")
             fields_by_client[client_name][field] = value
-    return {client_name: Client(name=client_name, **fields) for client_name, fields in fields_by_client.items()}
+
+    clients = {}
+    node_id_mapping = {}
+    for client_name, fields in fields_by_client.items():
+        exls_node_id = fields.pop("exls_node_id")
+        node_id_mapping[client_name] = exls_node_id
+        clients[client_name] = Client(name=client_name, **fields)
+
+    return clients, node_id_mapping

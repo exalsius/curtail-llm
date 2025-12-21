@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from logging import INFO
 from typing import Optional, Literal, Iterable
 
-import exalsius_api_client as exls
 import redis
 import torch
 import wandb
@@ -17,38 +16,30 @@ from flwr.serverapp.strategy.strategy_utils import aggregate_arrayrecords, aggre
 from redis import Redis
 
 from pilot.data import ShardManager
+from pilot.provisioner import ExlsProvisioner
 
 FlwrNodeId = int
-ExlsNodeId = str
 
 
 @dataclass
 class Client:
     name: str
-    host: str  # TODO currently unused
+    provision_threshold: int
+    deprovision_threshold: int
     flwr_node_id: Optional[FlwrNodeId] = None  # Set when client connects to Flower Grid
     _state: Literal["OFF", "STARTING", "IDLE", "TRAINING"] = "OFF"
 
-    def update_provisioning(
-        self, redis_client: Redis, clusters_api: exls.ClustersApi, cluster_id: str, exls_node_id: ExlsNodeId
-    ):
+    def update_provisioning(self, redis_client: Redis, provisioner: ExlsProvisioner, carbon_intensity: int):
         # Check whether the client should be provisioned
         if self._state == "OFF":
-            # TODO query forecast
-            below_threshold = False  # TODO define and compare to thresholds
-            if below_threshold:
+            if carbon_intensity < self.provision_threshold:
                 self._state = "STARTING"
-                clusters_api.add_nodes(cluster_id, exls.ClusterAddNodeRequest(
-                    nodes_to_add=[exls.ClusterNodeToAdd(node_id=exls_node_id, node_role="WORKER")]
-                ))
-                log(INFO, f"Provisioning client '{self.name}' (Exalsius node {exls_node_id})")
+                provisioner.add_node(self.name)
                 # State transitions to IDLE happens in the server loop once client connects to grid
         # Check whether the client should be deprovisioned
         else:
-            # TODO query forecast
-            below_threshold = False  # TODO define and compare to thresholds
-            if below_threshold:  # TODO should also only deprovision if end of billing interval
-                asyncio.create_task(self._deprovision(redis_client, clusters_api, cluster_id, exls_node_id))
+            if carbon_intensity > self.deprovision_threshold:
+                asyncio.create_task(self._deprovision(redis_client, provisioner))
 
     def start_training(self):
         assert self._state == "IDLE", f"Cannot start training: client '{self.name}' is {self._state}, expected IDLE"
@@ -58,9 +49,7 @@ class Client:
         assert self._state == "TRAINING", f"Cannot stop training: client '{self.name}' is {self._state}, expected TRAINING"
         self._state = "IDLE"
 
-    async def _deprovision(
-        self, redis_client: Redis, clusters_api: exls.ClustersApi, cluster_id: str, exls_node_id: ExlsNodeId
-    ):
+    async def _deprovision(self, redis_client: Redis, provisioner: ExlsProvisioner):
         """Gracefully deprovision a client by signaling stop and waiting for completion."""
         # Wrap up current round in case the client is still training
         if self._state == "TRAINING":
@@ -75,8 +64,7 @@ class Client:
                 log(INFO, f"Client '{self.name}' did not respond within timeout")
 
         assert self._state == "IDLE"
-        clusters_api.delete_node_from_cluster(cluster_id, exls_node_id)
-        log(INFO, f"Deprovisioned client '{self.name}' (Exalsius node {exls_node_id})")
+        provisioner.remove_node(self.name)
         self._state = "OFF"
 
 
@@ -93,9 +81,7 @@ class PilotAvg(Strategy):
         redis_url: str,
         redis_client: redis.Redis,
         round_min_duration: int,
-        clusters_api: exls.ClustersApi,
-        cluster_id: str,
-        node_id_mapping: dict[str, ExlsNodeId],  # client_name -> exls_node_id
+        provisioner: ExlsProvisioner,
         wandb_project: Optional[str] = None,
         wandb_entity: Optional[str] = None,
         wandb_run_group: Optional[str] = None,
@@ -108,9 +94,7 @@ class PilotAvg(Strategy):
         self.redis_url = redis_url
         self.redis_client = redis_client
         self.round_min_duration = round_min_duration
-        self.clusters_api = clusters_api
-        self.cluster_id = cluster_id
-        self.node_id_mapping = node_id_mapping
+        self.provisioner = provisioner
         self.weighted_by_key = "batches_processed"
         self.wandb_project = wandb_project
         self.wandb_entity = wandb_entity
@@ -265,7 +249,7 @@ class PilotAvg(Strategy):
         train_config = ConfigRecord() if train_config is None else train_config
 
         provisioning_task = asyncio.create_task(_provisioning_task(
-            self.clients, self.redis_client, self.clusters_api, self.cluster_id, self.node_id_mapping
+            self.clients, self.redis_client, self.provisioner
         ))
 
         start = time.time()
@@ -321,14 +305,13 @@ class PilotAvg(Strategy):
 async def _provisioning_task(
     clients: dict[str, Client],
     redis_client: Redis,
-    clusters_api: exls.ClustersApi,
-    cluster_id: str,
-    node_id_mapping: dict[str, ExlsNodeId],
+    provisioner: ExlsProvisioner,
 ):
     """Monitor clients for provisioning and deprovisioning decisions."""
     while True:
-        for name, client in clients.items():
-            client.update_provisioning(redis_client, clusters_api, cluster_id, node_id_mapping[name])
+        for client in clients.values():
+            carbon_intensity = 0  # TODO: fetch from forecast API
+            client.update_provisioning(redis_client, provisioner, carbon_intensity)
         await asyncio.sleep(5)
 
 
