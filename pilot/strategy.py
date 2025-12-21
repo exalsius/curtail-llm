@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from logging import INFO
 from typing import Optional, Literal, Iterable
 
+import exalsius_api_client as ex
 import redis
 import torch
 import wandb
@@ -22,24 +23,29 @@ from pilot.data import ShardManager
 class Client:
     name: str
     host: str  # TODO currently unused
-    node_id: Optional[int] = None  # TODO
-    _state: Literal["OFF", "STARTING", "IDLE", "TRAINING"] = "OFF"    # , "STOPPING"
+    node_id: Optional[int] = None  # Flower node_id, set when client connects
+    _state: Literal["OFF", "STARTING", "IDLE", "TRAINING"] = "OFF"
 
-    def update_provisioning(self, redis_client):
+    def update_provisioning(
+        self, redis_client: Redis, clusters_api: ex.ClustersApi, cluster_id: str, exalsius_node_id: str
+    ):
         # Check whether the client should be provisioned
         if self._state == "OFF":
             # TODO query forecast
             below_threshold = False  # TODO define and compare to thresholds
             if below_threshold:
                 self._state = "STARTING"
-                # TODO: Call provisioning API
+                clusters_api.add_nodes(cluster_id, ex.ClusterAddNodeRequest(
+                    nodes_to_add=[ex.ClusterNodeToAdd(node_id=exalsius_node_id, node_role="WORKER")]
+                ))
+                log(INFO, f"Provisioning client '{self.name}' (node {exalsius_node_id})")
                 # State transitions to IDLE happens in the server loop once client connects to grid
         # Check whether the client should be deprovisioned
         else:
             # TODO query forecast
             below_threshold = False  # TODO define and compare to thresholds
             if below_threshold:  # TODO should also only deprovision if end of billing interval
-                asyncio.create_task(self._deprovision(redis_client))
+                asyncio.create_task(self._deprovision(redis_client, clusters_api, cluster_id, exalsius_node_id))
 
     def start_training(self):
         assert self._state == "IDLE", f"Cannot start training: client '{self.name}' is {self._state}, expected IDLE"
@@ -49,7 +55,9 @@ class Client:
         assert self._state == "TRAINING", f"Cannot stop training: client '{self.name}' is {self._state}, expected TRAINING"
         self._state = "IDLE"
 
-    async def _deprovision(self, redis_client: Redis):
+    async def _deprovision(
+        self, redis_client: Redis, clusters_api: ex.ClustersApi, cluster_id: str, exalsius_node_id: str
+    ):
         """Gracefully deprovision a client by signaling stop and waiting for completion."""
         # Wrap up current round in case the client is still training
         if self._state == "TRAINING":
@@ -64,8 +72,8 @@ class Client:
                 log(INFO, f"Client '{self.name}' did not respond within timeout")
 
         assert self._state == "IDLE"
-        # TODO: Call deprovisioning API
-        log(INFO, f"Deprovisioning client '{self.name}'")
+        clusters_api.delete_node_from_cluster(cluster_id, exalsius_node_id)
+        log(INFO, f"Deprovisioned client '{self.name}' (node {exalsius_node_id})")
         self._state = "OFF"
 
 
@@ -82,6 +90,9 @@ class PilotAvg(Strategy):
         redis_url: str,
         redis_client: redis.Redis,
         round_min_duration: int,
+        clusters_api: ex.ClustersApi,
+        cluster_id: str,
+        node_id_mapping: dict[str, str],  # client_name -> exalsius_node_id
         wandb_project: Optional[str] = None,
         wandb_entity: Optional[str] = None,
         wandb_run_group: Optional[str] = None,
@@ -94,6 +105,9 @@ class PilotAvg(Strategy):
         self.redis_url = redis_url
         self.redis_client = redis_client
         self.round_min_duration = round_min_duration
+        self.clusters_api = clusters_api
+        self.cluster_id = cluster_id
+        self.node_id_mapping = node_id_mapping
         self.weighted_by_key = "batches_processed"
         self.wandb_project = wandb_project
         self.wandb_entity = wandb_entity
@@ -247,7 +261,9 @@ class PilotAvg(Strategy):
         self.summary()
         train_config = ConfigRecord() if train_config is None else train_config
 
-        provisioning_task = asyncio.create_task(_provisioning_task(self.clients, self.redis_client))
+        provisioning_task = asyncio.create_task(_provisioning_task(
+            self.clients, self.redis_client, self.clusters_api, self.cluster_id, self.node_id_mapping
+        ))
 
         start = time.time()
         arrays = initial_arrays
@@ -299,11 +315,17 @@ class PilotAvg(Strategy):
         return valid_replies, error_replies
 
 
-async def _provisioning_task(clients: dict[str, Client], redis_client: Redis):
+async def _provisioning_task(
+    clients: dict[str, Client],
+    redis_client: Redis,
+    clusters_api: ex.ClustersApi,
+    cluster_id: str,
+    node_id_mapping: dict[str, str],
+):
     """Monitor clients for provisioning and deprovisioning decisions."""
     while True:
-        for client in clients.values():
-            client.update_provisioning(redis_client)
+        for name, client in clients.items():
+            client.update_provisioning(redis_client, clusters_api, cluster_id, node_id_mapping[name])
         await asyncio.sleep(5)
 
 
