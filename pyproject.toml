@@ -17,6 +17,7 @@ dependencies = [
     "wandb",
     "redis>=5.0.0",
     "exalsius-api-client @ git+https://github.com/exalsius/exalsius-api-spec.git#subdirectory=client-sdk",
+    "vessim[sil]>=0.13.0",
 
     # Utilities
     "accelerate",
