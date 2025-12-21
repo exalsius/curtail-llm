@@ -79,7 +79,6 @@ class PilotAvg(Strategy):
         num_shards: int,
         debug_port_client: bool,
         redis_url: str,
-        redis_client: redis.Redis,
         round_min_duration: int,
         provisioner: ExlsProvisioner,
         wandb_project: Optional[str] = None,
@@ -89,16 +88,17 @@ class PilotAvg(Strategy):
         self.clients: dict[str, Client] = clients
         self.dataset_name = dataset_name
         self.num_shards = num_shards
-        self.shard_manager = ShardManager(num_shards=num_shards)
         self.debug_port_client = debug_port_client
         self.redis_url = redis_url
-        self.redis_client = redis_client
         self.round_min_duration = round_min_duration
         self.provisioner = provisioner
-        self.weighted_by_key = "batches_processed"
         self.wandb_project = wandb_project
         self.wandb_entity = wandb_entity
         self.wandb_run_group = wandb_run_group
+
+        self.redis_client = redis.from_url(redis_url)
+        self.shard_manager = ShardManager(num_shards=num_shards)
+        self.weighted_by_key = "batches_processed"
 
     def summary(self) -> None:
         """Log summary configuration of the strategy."""

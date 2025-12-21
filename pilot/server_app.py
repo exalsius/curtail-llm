@@ -20,12 +20,9 @@ app = ServerApp()
 def main(grid: Grid, context: Context) -> None:
     """Main entry point for the ServerApp."""
     lr: float = context.run_config["lr"]
-    dataset_name: str = context.run_config["dataset_name"]
     num_shards: int = context.run_config["num_shards"]
     batch_size: int = context.run_config["batch_size"]
     model_type: str = context.run_config["model_type"]
-    redis_url: str = context.run_config["redis_url"]
-    round_min_duration: int = context.run_config["round_min_duration"]
 
     debug_port_server: int = context.run_config.get("debug_port_server", None)
     if debug_port_server:
@@ -50,12 +47,9 @@ def main(grid: Grid, context: Context) -> None:
             "batch_size": batch_size,
             "num_shards": num_shards,
             "model_type": model_type,
-            "dataset_name": dataset_name,
         }
     )
     log(INFO, "Wandb initialized with run_id: %s", wandb.run.id)
-
-    redis_client = redis.from_url(redis_url)
 
     # Create clients and provisioner from config
     clients, node_id_mapping = _clients_from_run_config(context.run_config)
@@ -66,12 +60,11 @@ def main(grid: Grid, context: Context) -> None:
 
     strategy = PilotAvg(
         clients=clients,
-        dataset_name=dataset_name,
+        dataset_name=context.run_config["dataset_name"],
         num_shards=num_shards,
         debug_port_client=context.run_config.get("debug_port_client", None),
-        redis_url=redis_url,
-        redis_client=redis_client,
-        round_min_duration=round_min_duration,
+        redis_url=context.run_config["redis_url"],
+        round_min_duration=context.run_config["round_min_duration"],
         provisioner=provisioner,
         wandb_project=wandb_project,
         wandb_entity=wandb_entity,
