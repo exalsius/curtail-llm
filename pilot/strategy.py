@@ -5,6 +5,7 @@ from logging import INFO
 from typing import Optional, Literal, Iterable
 
 import redis
+import requests
 import torch
 import wandb
 
@@ -29,7 +30,7 @@ class Client:
     flwr_node_id: Optional[FlwrNodeId] = None  # Set when client connects to Flower Grid
     _state: Literal["OFF", "STARTING", "IDLE", "TRAINING"] = "OFF"
 
-    def update_provisioning(self, redis_client: Redis, provisioner: ExlsProvisioner, carbon_intensity: int):
+    def update_provisioning(self, redis_client: Redis, provisioner: ExlsProvisioner, carbon_intensity: float):
         # Check whether the client should be provisioned
         if self._state == "OFF":
             if carbon_intensity < self.provision_threshold:
@@ -81,6 +82,7 @@ class PilotAvg(Strategy):
         redis_url: str,
         round_min_duration: int,
         provisioner: ExlsProvisioner,
+        forecast_api_url: str,
         wandb_project: Optional[str] = None,
         wandb_entity: Optional[str] = None,
         wandb_run_group: Optional[str] = None,
@@ -92,6 +94,7 @@ class PilotAvg(Strategy):
         self.redis_url = redis_url
         self.round_min_duration = round_min_duration
         self.provisioner = provisioner
+        self.forecast_api_url = forecast_api_url
         self.wandb_project = wandb_project
         self.wandb_entity = wandb_entity
         self.wandb_run_group = wandb_run_group
@@ -249,7 +252,7 @@ class PilotAvg(Strategy):
         train_config = ConfigRecord() if train_config is None else train_config
 
         provisioning_task = asyncio.create_task(_provisioning_task(
-            self.clients, self.redis_client, self.provisioner
+            self.clients, self.redis_client, self.provisioner, self.forecast_api_url
         ))
 
         start = time.time()
@@ -306,12 +309,13 @@ async def _provisioning_task(
     clients: dict[str, Client],
     redis_client: Redis,
     provisioner: ExlsProvisioner,
+    forecast_api_url: str,
 ):
     """Monitor clients for provisioning and deprovisioning decisions."""
     while True:
         for client in clients.values():
-            carbon_intensity = 0  # TODO: fetch from forecast API
-            client.update_provisioning(redis_client, provisioner, carbon_intensity)
+            mci = get_mci(forecast_api_url, client.name)
+            client.update_provisioning(redis_client, provisioner, mci)
         await asyncio.sleep(5)
 
 
@@ -324,3 +328,11 @@ async def _round_controller(grid: Grid, redis_client: Redis, round_min_duration:
         await asyncio.sleep(10)
     await redis_client.publish(f"round:{current_round}:stop", f"END ROUND {current_round}")
     log(INFO, f"Signaled ROUND END after {int(time.time() - start)}s with {active_flwr_nodes} connected Flower clients.")
+
+
+def get_mci(base_url: str, client_name: str) -> float:
+    """Fetch current MCI index for a client's microgrid."""
+    url = f"{base_url}/microgrids/{client_name}"
+    response = requests.get(url, timeout=5)
+    response.raise_for_status()
+    return response.json()["grid_signals"]["mci_index"]
