@@ -29,8 +29,9 @@ uv run maturin develop --release --manifest-path rustbpe/Cargo.toml
 Next, prepare the tokenizer:
 
 ```bash
+export NANOCHAT_BASE_DIR=/workspace/cache/nanochat/
 python -m nanochat.dataset -n 240  # Download dataset for tokenizer training (~22GB of FineWeb-EDU data)
-python -m scripts.tok_train --max_chars=4000000000 --vocab_size=65536  # Train BPE tokenizer on ~4B characters
+python -m scripts.tok_train --max_chars=4000000000 --vocab_size=65536  # Train BPE tokenizer on ~4B characters, takes about 3min
 python -c "from nanochat.tokenizer import get_tokenizer; print(f'Vocab size: {get_tokenizer().get_vocab_size()}')"
 ```
 

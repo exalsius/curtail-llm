@@ -87,6 +87,7 @@ def train(msg: Message, context: Context):
     batches_processed = 0
     shard_progress = {}
     log_interval = context.run_config.get("log_interval")
+    last_log_time = time.time()
 
     pbar = tqdm(trainloader, desc="Training")
 
@@ -107,13 +108,21 @@ def train(msg: Message, context: Context):
             optimizer.zero_grad()
 
             if log_interval and batches_processed % log_interval == 0:
+                current_time = time.time()
+                dt = current_time - last_log_time
+                # Calculate tokens per second (approximate based on fixed batch size and max length)
+                tok_per_sec = (log_interval * batch_size * max_length) / dt
+
                 wandb.log({
-                    "train_loss": loss.item() * gradient_accumulation_steps,
-                    "learning_rate": lr,
-                    "gradient_norm": grad_norm.item(),
+                    "train/loss": loss.item() * gradient_accumulation_steps,
+                    "train/lr": lr,
+                    "train/grad_norm": grad_norm.item(),
+                    "train/tok_per_sec": tok_per_sec,
                     "batches_processed": batches_processed,
                     "current_shard": shard_id,
                 }, step=cumulative_batches + batches_processed)
+                
+                last_log_time = current_time
 
         total_loss += loss.item() * gradient_accumulation_steps
         pbar.set_postfix({"loss": loss.item() * gradient_accumulation_steps, "shard": shard_id})
