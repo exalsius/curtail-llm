@@ -73,6 +73,7 @@ wandb_project = "pilot_flwr"
 # debug_port_client = 5682
 
 exls_cluster_id = "your-cluster-uuid"
+forecast_api_url = "http://localhost:8700"
 clients = {hyperstack = {exls_node_id = "uuid-1", provision_threshold = 100, deprovision_threshold = 200}, amd = {exls_node_id = "uuid-2", provision_threshold = 80, deprovision_threshold = 150}}
 
 
