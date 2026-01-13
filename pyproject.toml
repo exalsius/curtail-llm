@@ -88,9 +88,9 @@ dataset_name = "karpathy/fineweb-edu-100b-shuffle"
 num_shards = 240  # Number of parquet files to use (each ~53k rows)
 lr = 0.0006  # nanochat's original learning rate
 weight_decay = 0.01
-device_batch_size = 2  # Small batch for testing
+device_batch_size = 32
 max_seq_len = 2048
-total_batch_size = 4096
+total_batch_size = 524288  # Matches nanochat d20 default (524k tokens = )
 # Model architecture (nanochat d20 defaults):
 #   vocab_size = 65536
 #   n_layer = 20 (depth)

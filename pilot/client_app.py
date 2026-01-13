@@ -105,6 +105,13 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     model.train()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
+    # Setup autocast context
+    if device.type == "cuda":
+        autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
+    else:
+        from contextlib import nullcontext
+        autocast_ctx = nullcontext()
+
     total_loss = 0.0
     batches_processed = 0
     shard_progress = {}  # Tracks absolute current_row
@@ -118,7 +125,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
         inputs = inputs.to(device)
         targets = targets.to(device)
 
-        with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
+        with autocast_ctx:
             loss = model(inputs, targets=targets)
             loss = loss / gradient_accumulation_steps
 
@@ -130,12 +137,15 @@ def run_training_process(rank, world_size, msg, context, result_dict):
             optimizer.step()
             optimizer.zero_grad()
 
-            if rank == 0 and log_interval and batches_processed % log_interval == 0:
+            step_count = batches_processed // gradient_accumulation_steps
+            if rank == 0 and log_interval and step_count % log_interval == 0:
                 current_time = time.time()
                 dt = current_time - last_log_time
                 # Calculate tokens per second (approximate based on fixed batch size and max length)
                 # Note: Multiply by world_size for global throughput
-                tok_per_sec = (log_interval * device_batch_size * max_seq_len * world_size) / dt
+                # dt covers 'log_interval' steps, each having 'gradient_accumulation_steps' micro-batches
+                tokens_processed_since_log = log_interval * gradient_accumulation_steps * device_batch_size * max_seq_len * world_size
+                tok_per_sec = tokens_processed_since_log / dt
 
                 wandb.log({
                     "train/loss": loss.item() * gradient_accumulation_steps,
@@ -143,6 +153,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                     "train/grad_norm": grad_norm.item(),
                     "train/tok_per_sec": tok_per_sec,
                     "batches_processed": batches_processed,
+                    "step": step_count,
                     "current_shard": shard_id,
                 }, step=cumulative_batches + batches_processed)
                 
