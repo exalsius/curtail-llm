@@ -75,10 +75,10 @@ class ShardManager:
 
         Args:
             shard_ids: List of shard IDs
-            shard_rows: List of rows processed for each shard
+            shard_rows: List of absolute row positions for each shard
         """
-        for shard_id, rows_processed in zip(shard_ids, shard_rows):
-            self.shard_states[shard_id]["processed_rows"] += rows_processed
+        for shard_id, new_row in zip(shard_ids, shard_rows):
+            self.shard_states[shard_id]["processed_rows"] = new_row
 
     def is_complete(self) -> bool:
         """Check if all shards are complete."""
@@ -118,7 +118,7 @@ def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_
         device: Device type
 
     Yields:
-        (inputs, targets, shard_id, rows_processed_in_shard)
+        (inputs, targets, shard_id, current_row)
     """
     base_dir = get_base_dir()
     data_dir = os.path.join(base_dir, "base_data")
@@ -136,7 +136,6 @@ def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_
         pf = pq.ParquetFile(filepath)
         total_rows = pf.metadata.num_rows
         current_row = start_row
-        rows_processed = 0
 
         log(INFO, f"Processing shard {shard_id}: rows {start_row}-{total_rows}")
 
@@ -152,7 +151,6 @@ def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_
             for tokens in token_lists:
                 token_buffer.extend(tokens)
                 current_row += 1
-                rows_processed += 1
 
                 # Yield batches
                 while len(token_buffer) >= needed_tokens:
@@ -161,7 +159,7 @@ def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_
                     scratch = torch.tensor(tokens_list, dtype=torch.long, pin_memory=use_cuda)
                     inputs = scratch[:-1].view(B, T).to(device=device, non_blocking=use_cuda)
                     targets = scratch[1:].view(B, T).to(device=device, non_blocking=use_cuda)
-                    yield inputs, targets, shard_id, rows_processed
+                    yield inputs, targets, shard_id, current_row
 
                 if current_row >= total_rows:
                     break

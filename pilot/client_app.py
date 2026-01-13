@@ -85,13 +85,13 @@ def train(msg: Message, context: Context):
 
     total_loss = 0.0
     batches_processed = 0
-    shard_progress = {}
+    shard_progress = {}  # Tracks absolute current_row
     log_interval = context.run_config.get("log_interval")
     last_log_time = time.time()
 
     pbar = tqdm(trainloader, desc="Training")
 
-    for inputs, targets, shard_id, rows_in_shard in pbar:
+    for inputs, targets, shard_id, current_row in pbar:
         inputs = inputs.to(device)
         targets = targets.to(device)
 
@@ -127,7 +127,7 @@ def train(msg: Message, context: Context):
         total_loss += loss.item() * gradient_accumulation_steps
         pbar.set_postfix({"loss": loss.item() * gradient_accumulation_steps, "shard": shard_id})
 
-        shard_progress[shard_id] = rows_in_shard
+        shard_progress[shard_id] = current_row
 
         # Check for stop signal (non-blocking)
         redis_msg = pubsub.get_message(timeout=0)
@@ -141,9 +141,8 @@ def train(msg: Message, context: Context):
         optimizer.zero_grad()
 
     avg_loss = total_loss / batches_processed if batches_processed > 0 else 0.0
-    total_rows_processed = sum(shard_progress.values())
 
-    log(INFO, f"Client {client_id}: {batches_processed} batches, {total_rows_processed} rows")
+    log(INFO, f"Client {client_id}: {batches_processed} batches")
 
     new_cumulative_batches = cumulative_batches + batches_processed
     context.state["cumulative_batches"] = MetricRecord({"cumulative_batches": new_cumulative_batches})
@@ -160,7 +159,6 @@ def train(msg: Message, context: Context):
                 "node_name": node_name,
                 "train_loss": avg_loss,
                 "batches_processed": batches_processed,
-                "total_rows_processed": total_rows_processed,
                 "shard_ids": shard_ids,
                 "shard_rows": shard_rows,
                 "cumulative_batches": new_cumulative_batches,

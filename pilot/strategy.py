@@ -193,7 +193,6 @@ class PilotAvg(Strategy):
             log_dict = {
                 "server/num_clients": len(valid_replies),
                 "data/progress": progress["progress"],
-                "data/total_rows_processed": progress["processed_rows"],
                 "data/shards_complete": progress["num_complete"],
             }
 
@@ -210,7 +209,6 @@ class PilotAvg(Strategy):
                 client_metrics: MetricRecord = reply.content["metrics"]
                 client_prefix = f"client_{client_metrics['client_id']}"
                 # Always present
-                log_dict[f"{client_prefix}/total_rows_processed"] = client_metrics["total_rows_processed"]
                 log_dict[f"{client_prefix}/batches_processed"] = client_metrics["batches_processed"]
                 # Optional metrics, add if available
                 if "train_loss" in client_metrics:
