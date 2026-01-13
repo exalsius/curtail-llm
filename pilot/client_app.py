@@ -17,8 +17,8 @@ app = ClientApp()
 
 @app.train()
 def train(msg: Message, context: Context):
-    client_id = context.node_config["partition-id"]
-    node_name = context.node_config["name"]
+    client_id = context.node_config.get("partition-id", 0)
+    node_name = context.node_config.get("name", f"client_{client_id}")
     config: ConfigRecord = msg.content["config"]
 
     if config.get("debug_port_client") and client_id == 0:
@@ -172,6 +172,6 @@ def train(msg: Message, context: Context):
 
 @app.query()
 def query(msg: Message, context: Context):
-    name = context.node_config["name"]
+    name = context.node_config.get("name", f"client_{context.node_config.get('partition-id', 0)}")
     log(INFO, f"HI! I'm CLIENT {name}")
     return Message(content=RecordDict({"config": ConfigRecord({"name": name})}), reply_to=msg)
