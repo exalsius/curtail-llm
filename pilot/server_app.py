@@ -21,7 +21,9 @@ def main(grid: Grid, context: Context) -> None:
     """Main entry point for the ServerApp."""
     lr: float = context.run_config["lr"]
     num_shards: int = context.run_config["num_shards"]
-    batch_size: int = context.run_config["batch_size"]
+    device_batch_size: int = context.run_config["device_batch_size"]
+    total_batch_size: int = context.run_config["total_batch_size"]
+    max_seq_len: int = context.run_config["max_seq_len"]
     model_type: str = context.run_config["model_type"]
 
     debug_port_server: int = context.run_config.get("debug_port_server", None)
@@ -35,7 +37,7 @@ def main(grid: Grid, context: Context) -> None:
     wandb_entity: str | None = context.run_config.get("wandb_entity")
 
     # Create run name with hyperparameters
-    run_name = f"sh{num_shards},bs{batch_size}"
+    run_name = f"bs{device_batch_size},tbs{total_batch_size},seq{max_seq_len}"
 
     wandb.init(
         project=wandb_project,
@@ -44,7 +46,9 @@ def main(grid: Grid, context: Context) -> None:
         group=run_name,  # Group all runs together
         config={
             "learning_rate": lr,
-            "batch_size": batch_size,
+            "device_batch_size": device_batch_size,
+            "total_batch_size": total_batch_size,
+            "max_seq_len": max_seq_len,
             "num_shards": num_shards,
             "model_type": model_type,
         }
@@ -73,8 +77,7 @@ def main(grid: Grid, context: Context) -> None:
     )
 
     # Load global model
-    max_length = context.run_config.get("max_length", 2048)
-    global_model = get_model(model_type, max_length)
+    global_model = get_model(model_type, max_seq_len)
 
     asyncio.run(strategy.start(
         grid=grid,
