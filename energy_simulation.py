@@ -13,18 +13,17 @@ def main():
     sim_start = datetime.now()
     environment = vs.Environment(sim_start=sim_start, step_size=10)
 
-    microgrids = []
     for i, (client_name, location) in enumerate(clients_and_location):
-        microgrid = environment.add_microgrid(
+        environment.add_microgrid(
             name=client_name,
             actors=[
-                vs.Actor(name="gpu", signal=vs.StaticSignal(200)),
-                #vs.Actor(name="gpu", signal=vs.PrometheusSignal(
+                vs.Actor(name="gpu", signal=vs.StaticSignal(-200)),  # Consumption is negative
+                # vs.Actor(name="gpu", signal=vs.PrometheusSignal(
                 #    prometheus_url="http://185.216.22.195:30826/prometheus",
                 #    query=f"DCGM_FI_DEV_POWER_USAGE{{gpu=\"{i}\"}}",
                 #    username="admin",
                 #    password="zponvkk0HC4oi5Kn1bvI"
-                #)),
+                # )),
                 # vs.Actor(name="solar", signal=vs.Trace.load(
                 #     dataset="solcast2022_global",
                 #     column=client_name,
@@ -41,10 +40,9 @@ def main():
                 location=location,
             )},
         )
-        microgrids.append(microgrid)
 
-    environment.add_controller(vs.Monitor(microgrids, outfile="results/experiment1.csv"))
-    environment.add_controller(vs.Api(microgrids, export_prometheus=True))
+    environment.add_controller(vs.CsvLogger(outfile="results/experiment1.csv"))
+    environment.add_controller(vs.Api(export_prometheus=True))
 
     environment.run(until=3600*24, rt_factor=1, behind_threshold=5)
 
