@@ -55,6 +55,8 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     matrix_lr = float(context.run_config["matrix_lr"])
     embedding_lr = float(context.run_config["embedding_lr"])
     unembedding_lr = float(context.run_config["unembedding_lr"])
+    weight_decay = float(context.run_config.get("weight_decay", 0.0))
+    grad_clip = float(context.run_config.get("grad_clip", 1.0))
     
     max_seq_len = context.run_config["max_seq_len"]
     total_batch_size = context.run_config["total_batch_size"]
@@ -130,7 +132,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
         unembedding_lr=unembedding_lr,
         embedding_lr=embedding_lr,
         matrix_lr=matrix_lr,
-        weight_decay=0.0  # Strict nanochat alignment
+        weight_decay=weight_decay
     )
     adamw_optimizer, muon_optimizer = optimizers
     
@@ -166,7 +168,12 @@ def run_training_process(rank, world_size, msg, context, result_dict):
         batches_processed += 1
 
         if batches_processed % gradient_accumulation_steps == 0:
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            if grad_clip > 0:
+                grad_norm_tensor = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                grad_norm = grad_norm_tensor.item()
+            else:
+                grad_norm = 0.0
+            
             for opt in optimizers:
                 opt.step()
             model.zero_grad(set_to_none=True)
@@ -187,18 +194,18 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                 tokens_processed_since_log = log_interval * gradient_accumulation_steps * device_batch_size * max_seq_len * world_size
                 tok_per_sec = tokens_processed_since_log / dt
 
+                loss_scalar = loss.item() * gradient_accumulation_steps
                 wandb.log({
-                    "train/loss": loss.item() * gradient_accumulation_steps,
+                    "train/loss": loss_scalar,
+                    "train/ppl": math.exp(loss_scalar),
                     "train/matrix_lr": matrix_lr,
                     "train/momentum": muon_momentum,
-                    "train/grad_norm": grad_norm.item(),
+                    "train/grad_norm": grad_norm,
                     "train/tok_per_sec": tok_per_sec,
                     "batches_processed": batches_processed,
                     "step": current_step, # Log global step
                     "current_shard": shard_id,
                 }, step=cumulative_batches + batches_processed)
-                
-                last_log_time = current_time
 
         total_loss += loss.item() * gradient_accumulation_steps
         

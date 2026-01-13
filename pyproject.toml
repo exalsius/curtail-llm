@@ -95,6 +95,8 @@ total_batch_size = 524288  # Matches nanochat d20 default (524k tokens)
 
 # Scheduling
 num_iterations = 2000
+weight_decay = 0.0
+grad_clip = 1.0
 warmup_ratio = 0.0
 warmdown_ratio = 0.2
 final_lr_frac = 0.0
