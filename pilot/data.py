@@ -106,7 +106,7 @@ class ShardManager:
                 f"complete={summary['num_complete']}/{summary['num_total']})")
 
 
-def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_batch_size=128, device="cuda"):
+def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_batch_size=128, device="cuda", rank=0, world_size=1):
     """Process multiple parquet shards sequentially for FL training.
 
     Args:
@@ -116,6 +116,8 @@ def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_
         tokenizer_threads: Tokenizer threads
         tokenizer_batch_size: Tokenization batch size
         device: Device type
+        rank: Worker rank (for DDP)
+        world_size: Total workers (for DDP)
 
     Yields:
         (inputs, targets, shard_id, current_row)
@@ -135,22 +137,33 @@ def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_
 
         pf = pq.ParquetFile(filepath)
         total_rows = pf.metadata.num_rows
-        current_row = start_row
 
-        log(INFO, f"Processing shard {shard_id}: rows {start_row}-{total_rows}")
+        log(INFO, f"Processing shard {shard_id}: rows {start_row}-{total_rows} (rank {rank}/{world_size})")
 
         # Read entire shard, skip rows before start_row
         table = pf.read()
         texts = table.column('text').to_pylist()[start_row:]
+        
+        # Subsample for this rank
+        my_texts = texts[rank::world_size]
 
         # Process in batches
-        for i in range(0, len(texts), tokenizer_batch_size):
-            batch = texts[i:i+tokenizer_batch_size]
+        for i in range(0, len(my_texts), tokenizer_batch_size):
+            batch = my_texts[i:i+tokenizer_batch_size]
             token_lists = tokenizer.encode(batch, prepend=bos_token, num_threads=tokenizer_threads)
 
-            for tokens in token_lists:
+            for j, tokens in enumerate(token_lists):
                 token_buffer.extend(tokens)
-                current_row += 1
+                
+                # Calculate global current_row
+                # local_idx = i + j
+                # global_offset = local_idx * world_size + rank
+                # current_row = start_row + global_offset
+                
+                # Simplified tracking: we need to report a safe resume point.
+                # If we report 'current_row', it means we processed this row.
+                local_idx = i + j
+                current_row = start_row + local_idx * world_size + rank
 
                 # Yield batches
                 while len(token_buffer) >= needed_tokens:
