@@ -32,11 +32,17 @@ def train(msg: Message, context: Context):
 
     # Extract config
     model_type = context.run_config["model_type"]
-    batch_size = context.run_config["batch_size"]
+    device_batch_size = context.run_config["device_batch_size"]
     lr = config["lr"]
     weight_decay = config.get("weight_decay", 0.01)
-    max_length = context.run_config.get("max_length", 2048)
-    gradient_accumulation_steps = context.run_config.get("gradient_accumulation_steps", 1)
+    max_seq_len = context.run_config["max_seq_len"]
+    total_batch_size = context.run_config["total_batch_size"]
+
+    # Calculate gradient accumulation steps
+    tokens_per_fwdbwd = device_batch_size * max_seq_len
+    assert total_batch_size % tokens_per_fwdbwd == 0
+    gradient_accumulation_steps = total_batch_size // tokens_per_fwdbwd
+
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     server_round = config.get("server_round", 0)
@@ -58,7 +64,7 @@ def train(msg: Message, context: Context):
     log(INFO, f"Client {client_id}: W&B initialized")
 
     # Load model
-    model = get_model(model_type, max_length)
+    model = get_model(model_type, max_seq_len)
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict(), strict=True)
     model.to(device)
 
@@ -67,10 +73,10 @@ def train(msg: Message, context: Context):
     # Create dataloader
     trainloader = fl_shard_dataloader(
         shard_assignments=shard_assignments,
-        B=batch_size,
-        T=max_length,
-        tokenizer_threads=context.run_config.get("tokenizer_threads", 4),
-        tokenizer_batch_size=context.run_config.get("tokenizer_batch_size", 128),
+        B=device_batch_size,
+        T=max_seq_len,
+        tokenizer_threads=context.run_config["tokenizer_threads"],
+        tokenizer_batch_size=context.run_config["tokenizer_batch_size"],
         device=device.type,
     )
 
@@ -86,7 +92,7 @@ def train(msg: Message, context: Context):
     total_loss = 0.0
     batches_processed = 0
     shard_progress = {}  # Tracks absolute current_row
-    log_interval = context.run_config.get("log_interval")
+    log_interval = context.run_config["log_interval"]
     last_log_time = time.time()
 
     pbar = tqdm(trainloader, desc="Training")
@@ -111,7 +117,7 @@ def train(msg: Message, context: Context):
                 current_time = time.time()
                 dt = current_time - last_log_time
                 # Calculate tokens per second (approximate based on fixed batch size and max length)
-                tok_per_sec = (log_interval * batch_size * max_length) / dt
+                tok_per_sec = (log_interval * device_batch_size * max_seq_len) / dt
 
                 wandb.log({
                     "train/loss": loss.item() * gradient_accumulation_steps,
@@ -128,7 +134,7 @@ def train(msg: Message, context: Context):
         pbar.set_postfix({
             "loss": loss.item() * gradient_accumulation_steps,
             "shard": shard_id,
-            "progress": f"{shard_progress_val:.1%}"
+            "shard_progress": f"{shard_progress_val:.1%}"
         })
 
         shard_progress[shard_id] = current_row

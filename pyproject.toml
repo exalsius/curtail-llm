@@ -68,6 +68,8 @@ round_min_duration = 60
 
 log_interval = 10  # Log client metrics every N batches
 wandb_project = "pilot_flwr"
+tokenizer_threads = 4
+tokenizer_batch_size = 128
 # wandb_entity = ""  # Optional wandb username / team name
 # debug_port_server = 5681
 # debug_port_client = 5682
@@ -86,9 +88,9 @@ dataset_name = "karpathy/fineweb-edu-100b-shuffle"
 num_shards = 240  # Number of parquet files to use (each ~53k rows)
 lr = 0.0006  # nanochat's original learning rate
 weight_decay = 0.01
-batch_size = 2  # Small batch for testing
-max_length = 512  # Reduced for testing (original: 2048)
-gradient_accumulation_steps = 1  # Set to 8 to simulate 8 GPUs on 1 GPU
+device_batch_size = 2  # Small batch for testing
+max_seq_len = 2048
+total_batch_size = 4096
 # Model architecture (nanochat d20 defaults):
 #   vocab_size = 65536
 #   n_layer = 20 (depth)
