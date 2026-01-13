@@ -1,3 +1,5 @@
+import json
+import math
 import os
 import sys
 import time
@@ -7,7 +9,6 @@ import redis
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-import wandb
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
 from flwr.common import ConfigRecord, log
@@ -79,17 +80,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     muon_momentum = float(config.get("muon_momentum", 0.95))
     global_tokens_processed_start = int(config.get("global_tokens_processed_start", 0))
 
-    # W&B init (only rank 0)
     if rank == 0:
-        wandb.init(
-            project=config["wandb_project"],
-            entity=config.get("wandb_entity"),
-            name=f"client_{client_id}",
-            group=config["wandb_group"],
-            resume="allow",
-            reinit=True,
-        )
-        log(INFO, f"Client {client_id}: W&B initialized")
         log(INFO, f"Client {client_id}: {len(shard_assignments)} shards: {shard_assignments}")
 
     # Load model
@@ -152,6 +143,9 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     shard_progress = {}  # Tracks absolute current_row
     log_interval = context.run_config["log_interval"]
     last_log_time = time.time()
+    
+    # Collect metrics for server-side logging
+    metrics_history = []
 
     # Tqdm only on rank 0
     iterator = tqdm(trainloader, desc="Training") if rank == 0 else trainloader
@@ -195,7 +189,9 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                 tok_per_sec = tokens_processed_since_log / dt
 
                 loss_scalar = loss.item() * gradient_accumulation_steps
-                wandb.log({
+                
+                metrics_history.append({
+                    "step": current_step,
                     "train/loss": loss_scalar,
                     "train/ppl": math.exp(loss_scalar),
                     "train/matrix_lr": matrix_lr,
@@ -203,9 +199,8 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                     "train/grad_norm": grad_norm,
                     "train/tok_per_sec": tok_per_sec,
                     "batches_processed": batches_processed,
-                    "step": current_step, # Log global step
                     "current_shard": shard_id,
-                }, step=cumulative_batches + batches_processed)
+                })
 
         total_loss += loss.item() * gradient_accumulation_steps
         
@@ -265,6 +260,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                     "shard_ids": shard_ids,
                     "shard_rows": shard_rows,
                     "cumulative_batches": new_cumulative_batches,
+                    "metrics_history": json.dumps(metrics_history),
                 }),
             }),
             reply_to=msg,

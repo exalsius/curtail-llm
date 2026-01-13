@@ -1,5 +1,7 @@
 import asyncio
+import json
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from logging import INFO
 from typing import Optional, Literal, Iterable
@@ -122,6 +124,7 @@ class PilotAvg(Strategy):
         round_config = dict(base_config)
         
         total_batch_size = int(round_config["total_batch_size"])
+        self.total_batch_size = total_batch_size
         current_step = self.global_tokens_processed // total_batch_size
         
         # Scheduler helpers
@@ -216,6 +219,7 @@ class PilotAvg(Strategy):
 
         arrays, metrics = None, None
         if valid_replies:
+            client_histories = []
             for reply in valid_replies:
                 # Update shard states from worker results
                 metrics: MetricRecord = reply.content["metrics"]
@@ -224,11 +228,31 @@ class PilotAvg(Strategy):
                 # Accumulate global tokens
                 if "num_tokens_processed" in metrics:
                     self.global_tokens_processed += int(metrics["num_tokens_processed"])
+                
+                # Collect history
+                if "metrics_history" in metrics:
+                    hist = json.loads(metrics["metrics_history"])
+                    client_histories.extend(hist)
 
             progress = self.shard_manager.get_progress_summary()
             log(INFO, f"[Round {server_round}] Shard progress: {progress['progress']:.1%} "
                       f"({progress['processed_rows']:,}/{progress['total_rows']:,} rows, "
                       f"{progress['num_complete']}/{progress['num_total']} complete)")
+            
+            # Aggregate and log client histories (high-freq training curves)
+            step_map = defaultdict(lambda: defaultdict(list))
+            for entry in client_histories:
+                step = entry["step"]
+                for k, v in entry.items():
+                    if k != "step" and isinstance(v, (int, float)) and k != "current_shard":
+                        step_map[step][k].append(v)
+            
+            sorted_steps = sorted(step_map.keys())
+            for step in sorted_steps:
+                agg_entry = {}
+                for k, values in step_map[step].items():
+                     agg_entry[k] = sum(values) / len(values)
+                wandb.log(agg_entry, step=step)
 
             # Default FedAvg aggregation
             reply_contents = [msg.content for msg in valid_replies]
@@ -265,7 +289,9 @@ class PilotAvg(Strategy):
                 if "actual_train_time" in client_metrics:
                     log_dict[f"{client_prefix}/actual_train_time"] = client_metrics["actual_train_time"]
 
-            wandb.log(log_dict, step=server_round)
+            # Use global step for summary
+            summary_step = self.global_tokens_processed // self.total_batch_size if hasattr(self, "total_batch_size") else server_round
+            wandb.log(log_dict, step=summary_step)
 
         return arrays, metrics
 
