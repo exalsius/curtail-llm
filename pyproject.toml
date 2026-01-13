@@ -91,7 +91,15 @@ embedding_lr = 0.2
 unembedding_lr = 0.004
 device_batch_size = 2  # Small batch for testing
 max_seq_len = 2048
-total_batch_size = 524288  # Matches nanochat d20 default (524k tokens = )
+total_batch_size = 524288  # Matches nanochat d20 default (524k tokens)
+
+# Scheduling
+num_iterations = 2000
+warmup_ratio = 0.0
+warmdown_ratio = 0.2
+final_lr_frac = 0.0
+use_muon = true
+
 # Model architecture (nanochat d20 defaults):
 #   vocab_size = 65536
 #   n_layer = 20 (depth)

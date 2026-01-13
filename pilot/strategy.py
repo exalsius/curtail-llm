@@ -102,6 +102,7 @@ class PilotAvg(Strategy):
         self.redis_client = redis.from_url(redis_url)
         self.shard_manager = ShardManager(num_shards=num_shards)
         self.weighted_by_key = "batches_processed"
+        self.global_tokens_processed = 0
 
     def summary(self) -> None:
         """Log summary configuration of the strategy."""
@@ -115,7 +116,46 @@ class PilotAvg(Strategy):
         while len(flwr_node_ids := list(grid.get_node_ids())) < 1:
             log(INFO, "Waiting for a client to connect")
             time.sleep(1)
+        
+        # --- Server-side Scheduling ---
+        # Work on a copy to preserve baseline LRs in base_config
+        round_config = dict(base_config)
+        
+        total_batch_size = int(round_config["total_batch_size"])
+        current_step = self.global_tokens_processed // total_batch_size
+        
+        # Scheduler helpers
+        num_iterations = int(round_config["num_iterations"])
+        warmup_ratio = float(round_config["warmup_ratio"])
+        warmdown_ratio = float(round_config["warmdown_ratio"])
+        final_lr_frac = float(round_config["final_lr_frac"])
 
+        def get_lr_multiplier(step):
+            warmup_iters = round(warmup_ratio * num_iterations)
+            warmdown_iters = round(warmdown_ratio * num_iterations)
+            if step < warmup_iters:
+                return (step + 1) / warmup_iters
+            elif step <= num_iterations - warmdown_iters:
+                return 1.0
+            else:
+                progress = (num_iterations - step) / warmdown_iters
+                return progress * 1.0 + (1 - progress) * final_lr_frac
+
+        def get_muon_momentum(step):
+            frac = min(step / 300, 1)
+            return (1 - frac) * 0.85 + frac * 0.95
+
+        lrm = get_lr_multiplier(current_step)
+        momentum = get_muon_momentum(current_step)
+        
+        # Apply schedule
+        round_config["matrix_lr"] = float(round_config["matrix_lr"]) * lrm
+        round_config["embedding_lr"] = float(round_config["embedding_lr"]) * lrm
+        round_config["unembedding_lr"] = float(round_config["unembedding_lr"]) * lrm
+        round_config["muon_momentum"] = momentum
+        
+        log(INFO, f"Round {server_round} schedule: Step {current_step}, LRM {lrm:.4f}, Momentum {momentum:.4f}")
+        # ------------------------------
 
         #################################################
         log(INFO, f"Querying all {len(flwr_node_ids)} connected Flower nodes for their names...")
@@ -128,7 +168,7 @@ class PilotAvg(Strategy):
             client_name: str = reply.content["config"]["name"]
             log(INFO, f" - Flower node {reply.metadata.src_node_id}: '{client_name}'")
             self.clients[client_name]._state = "IDLE"
-            self.clients[client_name].flwr_node_id = reply.metadata.src_node_id
+            self.clients[client_name]._flwr_node_id = reply.metadata.src_node_id
         #################################################
 
 
@@ -139,23 +179,25 @@ class PilotAvg(Strategy):
         progress = self.shard_manager.get_progress_summary()
         log(INFO, f"Shard progress: {progress['progress']:.1%} ({progress['num_complete']}/{progress['num_total']} complete)")
 
-        base_config["server_round"] = server_round
-        base_config["dataset_name"] = self.dataset_name
-        base_config["num_shards"] = self.num_shards
-        base_config["redis_url"] = self.redis_url
+        round_config["server_round"] = server_round
+        round_config["dataset_name"] = self.dataset_name
+        round_config["num_shards"] = self.num_shards
+        round_config["redis_url"] = self.redis_url
+        round_config["global_tokens_processed_start"] = self.global_tokens_processed
+
         if self.debug_port_client:
-            base_config["debug_port_client"] = self.debug_port_client
+            round_config["debug_port_client"] = self.debug_port_client
 
         # Pass W&B configuration to clients
-        base_config["wandb_project"] = self.wandb_project
-        base_config["wandb_group"] = self.wandb_run_group
+        round_config["wandb_project"] = self.wandb_project
+        round_config["wandb_group"] = self.wandb_run_group
         if self.wandb_entity:
-            base_config["wandb_entity"] = self.wandb_entity
+            round_config["wandb_entity"] = self.wandb_entity
 
         messages = []
         for flwr_node_id in flwr_node_ids:
             config = ConfigRecord({
-                **base_config,
+                **round_config,
                 **assignments[flwr_node_id],
             })
             record = RecordDict({"arrays": arrays, "config": config})
@@ -178,6 +220,10 @@ class PilotAvg(Strategy):
                 # Update shard states from worker results
                 metrics: MetricRecord = reply.content["metrics"]
                 self.shard_manager.update(metrics["shard_ids"], metrics["shard_rows"])
+                
+                # Accumulate global tokens
+                if "num_tokens_processed" in metrics:
+                    self.global_tokens_processed += int(metrics["num_tokens_processed"])
 
             progress = self.shard_manager.get_progress_summary()
             log(INFO, f"[Round {server_round}] Shard progress: {progress['progress']:.1%} "
@@ -194,6 +240,7 @@ class PilotAvg(Strategy):
                 "server/num_clients": len(valid_replies),
                 "data/progress": progress["progress"],
                 "data/shards_complete": progress["num_complete"],
+                "server/global_tokens_processed": self.global_tokens_processed,
             }
 
             # Log aggregated server metrics

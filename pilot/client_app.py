@@ -71,6 +71,11 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     shard_starts = config.get("shard_starts", [])
     shard_assignments = list(zip(shard_ids, shard_starts))
 
+    # Scheduler Config
+    # LRs and momentum are now scheduled by the server per round
+    muon_momentum = float(config.get("muon_momentum", 0.95))
+    global_tokens_processed_start = int(config.get("global_tokens_processed_start", 0))
+
     # W&B init (only rank 0)
     if rank == 0:
         wandb.init(
@@ -120,6 +125,11 @@ def run_training_process(rank, world_size, msg, context, result_dict):
         matrix_lr=matrix_lr,
         weight_decay=0.0  # Strict nanochat alignment
     )
+    adamw_optimizer, muon_optimizer = optimizers
+    
+    # Set Muon momentum (scheduled by server)
+    for group in muon_optimizer.param_groups:
+        group["momentum"] = muon_momentum
 
     # Setup autocast context
     if device.type == "cuda":
@@ -158,6 +168,12 @@ def run_training_process(rank, world_size, msg, context, result_dict):
             if rank == 0 and log_interval and step_count % log_interval == 0:
                 current_time = time.time()
                 dt = current_time - last_log_time
+                
+                # Calculate global step for logging
+                tokens_processed_locally = batches_processed * device_batch_size * max_seq_len * world_size
+                total_global_tokens = global_tokens_processed_start + tokens_processed_locally
+                current_step = total_global_tokens // total_batch_size
+                
                 # Calculate tokens per second (approximate based on fixed batch size and max length)
                 # Note: Multiply by world_size for global throughput
                 # dt covers 'log_interval' steps, each having 'gradient_accumulation_steps' micro-batches
@@ -167,10 +183,11 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                 wandb.log({
                     "train/loss": loss.item() * gradient_accumulation_steps,
                     "train/matrix_lr": matrix_lr,
+                    "train/momentum": muon_momentum,
                     "train/grad_norm": grad_norm.item(),
                     "train/tok_per_sec": tok_per_sec,
                     "batches_processed": batches_processed,
-                    "step": step_count,
+                    "step": current_step, # Log global step
                     "current_shard": shard_id,
                 }, step=cumulative_batches + batches_processed)
                 
@@ -219,6 +236,8 @@ def run_training_process(rank, world_size, msg, context, result_dict):
 
         # Unwrap model if DDP
         state_dict = model.module.state_dict() if world_size > 1 else model.state_dict()
+        
+        tokens_processed_round = batches_processed * device_batch_size * max_seq_len * world_size
 
         result_dict["message"] = Message(
             content=RecordDict({
@@ -228,6 +247,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                     "node_name": node_name,
                     "train_loss": avg_loss,
                     "batches_processed": batches_processed,
+                    "num_tokens_processed": tokens_processed_round,
                     "shard_ids": shard_ids,
                     "shard_rows": shard_rows,
                     "cumulative_batches": new_cumulative_batches,

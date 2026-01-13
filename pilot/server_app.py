@@ -79,10 +79,22 @@ def main(grid: Grid, context: Context) -> None:
     # Load global model
     global_model = get_model(model_type, max_seq_len)
 
+    # Extract scheduler config
+    train_config_dict = {
+        "matrix_lr": float(context.run_config["matrix_lr"]),
+        "embedding_lr": float(context.run_config["embedding_lr"]),
+        "unembedding_lr": float(context.run_config["unembedding_lr"]),
+        "num_iterations": int(context.run_config["num_iterations"]),
+        "warmup_ratio": float(context.run_config["warmup_ratio"]),
+        "warmdown_ratio": float(context.run_config["warmdown_ratio"]),
+        "final_lr_frac": float(context.run_config["final_lr_frac"]),
+        "total_batch_size": total_batch_size,
+    }
+
     asyncio.run(strategy.start(
         grid=grid,
         initial_arrays=ArrayRecord(global_model.state_dict()),
-        train_config=ConfigRecord(dict(lr=lr)),
+        train_config=ConfigRecord(train_config_dict),
     ))
 
     # Finish wandb run
