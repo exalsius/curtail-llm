@@ -31,6 +31,9 @@ dependencies = [
     "requests",
     "tokenizers",
     "tiktoken>=0.11.0",  # tiktoken for efficient inference
+    "kernels>=0.11.7",
+    "psutil",
+    "PyYAML",
 ]
 
 [dependency-groups]
