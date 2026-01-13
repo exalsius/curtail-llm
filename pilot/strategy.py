@@ -265,10 +265,6 @@ class PilotAvg(Strategy):
                 if "actual_train_time" in client_metrics:
                     log_dict[f"{client_prefix}/actual_train_time"] = client_metrics["actual_train_time"]
 
-            # Add individual shard states (processed rows for each shard)
-            for shard_id, state in self.shard_manager.shard_states.items():
-                log_dict[f"data/shard_{shard_id}_rows"] = state["processed_rows"]
-
             wandb.log(log_dict, step=server_round)
 
         return arrays, metrics

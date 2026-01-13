@@ -118,7 +118,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     model.train()
     
     # Initialize optimizers (Muon + AdamW)
-    raw_model = model.module if world_size > 1 else model
+    raw_model = getattr(model, "module", model)
     optimizers = raw_model.setup_optimizers(
         unembedding_lr=unembedding_lr,
         embedding_lr=embedding_lr,
@@ -162,7 +162,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             for opt in optimizers:
                 opt.step()
-                opt.zero_grad()
+            model.zero_grad(set_to_none=True)
 
             step_count = batches_processed // gradient_accumulation_steps
             if rank == 0 and log_interval and step_count % log_interval == 0:
@@ -217,7 +217,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     if (batches_processed % gradient_accumulation_steps) != 0:
         for opt in optimizers:
             opt.step()
-            opt.zero_grad()
+        model.zero_grad(set_to_none=True)
 
     avg_loss = total_loss / batches_processed if batches_processed > 0 else 0.0
 
@@ -235,7 +235,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
         shard_rows = list(shard_progress.values())
 
         # Unwrap model if DDP
-        state_dict = model.module.state_dict() if world_size > 1 else model.state_dict()
+        state_dict = getattr(model, "module", model).state_dict()
         
         tokens_processed_round = batches_processed * device_batch_size * max_seq_len * world_size
 
