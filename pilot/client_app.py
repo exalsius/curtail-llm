@@ -91,7 +91,7 @@ def train(msg: Message, context: Context):
 
     pbar = tqdm(trainloader, desc="Training")
 
-    for inputs, targets, shard_id, current_row in pbar:
+    for inputs, targets, shard_id, current_row, shard_progress_val in pbar:
         inputs = inputs.to(device)
         targets = targets.to(device)
 
@@ -125,7 +125,11 @@ def train(msg: Message, context: Context):
                 last_log_time = current_time
 
         total_loss += loss.item() * gradient_accumulation_steps
-        pbar.set_postfix({"loss": loss.item() * gradient_accumulation_steps, "shard": shard_id})
+        pbar.set_postfix({
+            "loss": loss.item() * gradient_accumulation_steps,
+            "shard": shard_id,
+            "progress": f"{shard_progress_val:.1%}"
+        })
 
         shard_progress[shard_id] = current_row
 

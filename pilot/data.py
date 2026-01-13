@@ -159,7 +159,7 @@ def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_
                     scratch = torch.tensor(tokens_list, dtype=torch.long, pin_memory=use_cuda)
                     inputs = scratch[:-1].view(B, T).to(device=device, non_blocking=use_cuda)
                     targets = scratch[1:].view(B, T).to(device=device, non_blocking=use_cuda)
-                    yield inputs, targets, shard_id, current_row
+                    yield inputs, targets, shard_id, current_row, current_row / total_rows
 
                 if current_row >= total_rows:
                     break

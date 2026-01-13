@@ -71,13 +71,13 @@ flower-superlink --insecure
 CUDA_VISIBLE_DEVICES=0 flower-supernode --insecure \
   --superlink 127.0.0.1:9092 \
   --clientappio-api-address 127.0.0.1:9094 \
-  --node-config 'name="hyperstack" partition-id=0' 
+  --node-config 'name="client_0" partition-id=0' 
 
 # Node 1
 CUDA_VISIBLE_DEVICES=1 flower-supernode --insecure \
   --superlink 127.0.0.1:9092 \
   --clientappio-api-address 127.0.0.1:9095 \
-  --node-config 'name="amd" partition-id=1'
+  --node-config 'name="client_1" partition-id=1'
 ```
 4. Run the Flower app:
 ```bash
