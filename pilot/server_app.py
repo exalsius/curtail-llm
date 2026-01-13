@@ -55,8 +55,8 @@ def main(grid: Grid, context: Context) -> None:
     clients, node_id_mapping = _clients_from_run_config(context.run_config)
     log(INFO, "Configured clients: %s", list(clients.keys()))
 
-    exls_cluster_id: str = context.run_config["exls_cluster_id"]
-    provisioner = ExlsProvisioner(exls_cluster_id, node_id_mapping)
+    exls_cluster_id: str = context.run_config.get("exls_cluster_id")
+    provisioner = ExlsProvisioner(exls_cluster_id, node_id_mapping) if exls_cluster_id else None
 
     strategy = PilotAvg(
         clients=clients,

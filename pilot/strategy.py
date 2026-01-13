@@ -81,7 +81,7 @@ class PilotAvg(Strategy):
         debug_port_client: bool,
         redis_url: str,
         round_min_duration: int,
-        provisioner: ExlsProvisioner,
+        provisioner: Optional[ExlsProvisioner],
         forecast_api_url: str,
         wandb_project: Optional[str] = None,
         wandb_entity: Optional[str] = None,
@@ -251,9 +251,11 @@ class PilotAvg(Strategy):
         self.summary()
         train_config = ConfigRecord() if train_config is None else train_config
 
-        provisioning_task = asyncio.create_task(_provisioning_task(
-            self.clients, self.redis_client, self.provisioner, self.forecast_api_url
-        ))
+        provisioning_task = None
+        if self.provisioner:
+            provisioning_task = asyncio.create_task(_provisioning_task(
+                self.clients, self.redis_client, self.provisioner, self.forecast_api_url
+            ))
 
         start = time.time()
         arrays = initial_arrays
@@ -269,7 +271,8 @@ class PilotAvg(Strategy):
             if agg_train_metrics is not None:
                 log(INFO, "\t└──> Aggregated MetricRecord: %s", agg_train_metrics)
 
-        provisioning_task.cancel()
+        if provisioning_task:
+            provisioning_task.cancel()
         log(INFO, f"\nStrategy execution finished in {time.time() - start:.2f}s")
         log(INFO, "\nSaving final model to disk...")
         torch.save(arrays.to_torch_state_dict(), "final_model.pt")
