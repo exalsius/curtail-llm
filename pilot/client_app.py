@@ -33,6 +33,11 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # Set env vars for nanochat helpers (get_dist_info)
+    os.environ["RANK"] = str(rank)
+    os.environ["LOCAL_RANK"] = str(rank)  # Assuming single node
+    os.environ["WORLD_SIZE"] = str(world_size)
+
     if config.get("debug_port_client") and client_id == 0 and rank == 0:
         import pydevd_pycharm
         pydevd_pycharm.settrace('localhost', port=config["debug_port_client"], stdout_to_server=True, stderr_to_server=True)
@@ -45,8 +50,11 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     # Extract config
     model_type = context.run_config["model_type"]
     device_batch_size = context.run_config["device_batch_size"]
-    lr = config["lr"]
-    weight_decay = config.get("weight_decay", 0.01)
+    
+    matrix_lr = float(context.run_config["matrix_lr"])
+    embedding_lr = float(context.run_config["embedding_lr"])
+    unembedding_lr = float(context.run_config["unembedding_lr"])
+    
     max_seq_len = context.run_config["max_seq_len"]
     total_batch_size = context.run_config["total_batch_size"]
 
@@ -103,7 +111,15 @@ def run_training_process(rank, world_size, msg, context, result_dict):
 
     # Training loop
     model.train()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    
+    # Initialize optimizers (Muon + AdamW)
+    raw_model = model.module if world_size > 1 else model
+    optimizers = raw_model.setup_optimizers(
+        unembedding_lr=unembedding_lr,
+        embedding_lr=embedding_lr,
+        matrix_lr=matrix_lr,
+        weight_decay=0.0  # Strict nanochat alignment
+    )
 
     # Setup autocast context
     if device.type == "cuda":
@@ -133,9 +149,10 @@ def run_training_process(rank, world_size, msg, context, result_dict):
         batches_processed += 1
 
         if batches_processed % gradient_accumulation_steps == 0:
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float('inf'))
-            optimizer.step()
-            optimizer.zero_grad()
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            for opt in optimizers:
+                opt.step()
+                opt.zero_grad()
 
             step_count = batches_processed // gradient_accumulation_steps
             if rank == 0 and log_interval and step_count % log_interval == 0:
@@ -149,7 +166,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
 
                 wandb.log({
                     "train/loss": loss.item() * gradient_accumulation_steps,
-                    "train/lr": lr,
+                    "train/matrix_lr": matrix_lr,
                     "train/grad_norm": grad_norm.item(),
                     "train/tok_per_sec": tok_per_sec,
                     "batches_processed": batches_processed,
@@ -181,8 +198,9 @@ def run_training_process(rank, world_size, msg, context, result_dict):
 
     # Flush gradients
     if (batches_processed % gradient_accumulation_steps) != 0:
-        optimizer.step()
-        optimizer.zero_grad()
+        for opt in optimizers:
+            opt.step()
+            opt.zero_grad()
 
     avg_loss = total_loss / batches_processed if batches_processed > 0 else 0.0
 
