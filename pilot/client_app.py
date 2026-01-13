@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 from logging import INFO
 
@@ -93,6 +94,12 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     model = get_model(model_type, max_seq_len)
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict(), strict=True)
     model.to(device)
+
+    # Compile model (Linux + CUDA only)
+    if sys.platform == "linux" and device.type == "cuda":
+        if rank == 0:
+            log(INFO, "Compiling model with torch.compile...")
+        model = torch.compile(model)
 
     if world_size > 1:
         model = DDP(model, device_ids=[rank])
