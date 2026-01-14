@@ -160,7 +160,9 @@ if resuming:
     del model_data # free up this memory after the copy
 
 orig_model = model # original, uncompiled model, for saving raw model state_dict and for inference/evaluation (because the shapes may change shape)
+print0("Compiling the model for training...")
 model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
+print0("Compiling done.")
 num_params = sum(p.numel() for p in model.parameters())
 num_scaling_params = orig_model.num_scaling_params()
 print0(f"Number of parameters: {num_params:,} (scaling: {num_scaling_params:,})")
