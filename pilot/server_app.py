@@ -24,7 +24,6 @@ def main(grid: Grid, context: Context) -> None:
     device_batch_size: int = context.run_config["device_batch_size"]
     total_batch_size: int = context.run_config["total_batch_size"]
     max_seq_len: int = context.run_config["max_seq_len"]
-    model_type: str = context.run_config["model_type"]
 
     debug_port_server: int = context.run_config.get("debug_port_server", None)
     if debug_port_server:
@@ -50,7 +49,6 @@ def main(grid: Grid, context: Context) -> None:
             "total_batch_size": total_batch_size,
             "max_seq_len": max_seq_len,
             "num_shards": num_shards,
-            "model_type": model_type,
         }
     )
     log(INFO, "Wandb initialized with run_id: %s", wandb.run.id)
@@ -76,20 +74,30 @@ def main(grid: Grid, context: Context) -> None:
         wandb_run_group=run_name,
     )
 
-    # Load global model
-    global_model = get_model(model_type, max_seq_len)
-
     # Extract scheduler config
     train_config_dict = {
         "matrix_lr": float(context.run_config["matrix_lr"]),
         "embedding_lr": float(context.run_config["embedding_lr"]),
         "unembedding_lr": float(context.run_config["unembedding_lr"]),
+        "scalar_lr": float(context.run_config.get("scalar_lr", 0.5)),
+        "weight_decay": float(context.run_config.get("weight_decay", 0.0)),
+        "grad_clip": float(context.run_config.get("grad_clip", 1.0)),
         "num_iterations": int(context.run_config["num_iterations"]),
         "warmup_ratio": float(context.run_config["warmup_ratio"]),
         "warmdown_ratio": float(context.run_config["warmdown_ratio"]),
         "final_lr_frac": float(context.run_config["final_lr_frac"]),
         "total_batch_size": total_batch_size,
+        "device_batch_size": device_batch_size,
+        "max_seq_len": max_seq_len,
+        "vocab_size": int(context.run_config["vocab_size"]),
+        "n_layer": int(context.run_config["n_layer"]),
+        "n_embd": int(context.run_config["n_embd"]),
+        "n_head": int(context.run_config["n_head"]),
+        "n_kv_head": int(context.run_config["n_kv_head"]),
     }
+
+    # Load global model
+    global_model = get_model(train_config_dict, max_seq_len)
 
     asyncio.run(strategy.start(
         grid=grid,

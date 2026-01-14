@@ -152,10 +152,27 @@ class PilotAvg(Strategy):
         momentum = get_muon_momentum(current_step)
         
         # Apply schedule
-        round_config["matrix_lr"] = float(round_config["matrix_lr"]) * lrm
-        round_config["embedding_lr"] = float(round_config["embedding_lr"]) * lrm
-        round_config["unembedding_lr"] = float(round_config["unembedding_lr"]) * lrm
+        # Batch size scaling for learning rates (hyperparameters were tuned at reference batch size 2^19)
+        batch_lr_scale = 1.0
+        reference_batch_size = 2**19
+        batch_ratio = total_batch_size / reference_batch_size
+        if batch_ratio != 1.0:
+            batch_lr_scale = batch_ratio ** 0.5
+            log(INFO, f"Scaling LRs by {batch_lr_scale:.4f} for batch size {total_batch_size:,}")
+
+        # Weight decay is tuned at d12 and its scaling seems to be \propto 1/channels^2 (or equivalently, \propto 1/depth^2 due to constant aspect ratio)
+        weight_decay = float(round_config.get("weight_decay", 0.0))
+        depth = int(round_config["n_layer"])
+        weight_decay_scaled = weight_decay * (12 / depth)**2
+        if depth != 12:
+            log(INFO, f"Scaling weight decay from {weight_decay:.6f} to {weight_decay_scaled:.6f} for depth {depth}")
+
+        round_config["matrix_lr"] = float(round_config["matrix_lr"]) * lrm * batch_lr_scale
+        round_config["embedding_lr"] = float(round_config["embedding_lr"]) * lrm * batch_lr_scale
+        round_config["unembedding_lr"] = float(round_config["unembedding_lr"]) * lrm * batch_lr_scale
+        round_config["scalar_lr"] = float(round_config.get("scalar_lr", 0.5)) * lrm * batch_lr_scale
         round_config["muon_momentum"] = momentum
+        round_config["weight_decay"] = weight_decay_scaled
         
         log(INFO, f"Round {server_round} schedule: Step {current_step}, LRM {lrm:.4f}, Momentum {momentum:.4f}")
         # ------------------------------

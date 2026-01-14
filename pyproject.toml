@@ -85,8 +85,6 @@ clients = {client_0 = {exls_node_id = "uuid-1", provision_threshold = 100, depro
 # ===== Nanochat Configuration (GPT Pretraining) =====
 # Original nanochat hyperparameters from karpathy/nanochat
 # Baseline: 4h on 8xH100 for 11.2B tokens (560M param model)
-task_type = "nanochat"
-model_type = "nanochat_d20"  # d20 = 20 layers, 560M params
 dataset_name = "karpathy/fineweb-edu-100b-shuffle"
 num_shards = 240  # Number of parquet files to use (each ~53k rows)
 matrix_lr = 0.02
@@ -98,7 +96,7 @@ total_batch_size = 524288  # Matches nanochat d20 default (524k tokens)
 
 # Scheduling
 num_iterations = 2000
-weight_decay = 0.0
+weight_decay = 0.2
 grad_clip = 1.0
 warmup_ratio = 0.0
 warmdown_ratio = 0.2
@@ -106,11 +104,11 @@ final_lr_frac = 0.0
 use_muon = true
 
 # Model architecture (nanochat d20 defaults):
-#   vocab_size = 65536
-#   n_layer = 20 (depth)
-#   n_embd = 1280 (hidden size)
-#   n_head = 10 (attention heads)
-#   n_kv_head = 10 (KV heads for MQA)
+vocab_size = 65536
+n_layer = 20
+n_embd = 1280
+n_head = 10
+n_kv_head = 10
 
 
 [tool.flwr.federations]

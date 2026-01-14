@@ -50,17 +50,16 @@ def run_training_process(rank, world_size, msg, context, result_dict):
         cumulative_batches = 0
 
     # Extract config
-    model_type = context.run_config["model_type"]
-    device_batch_size = context.run_config["device_batch_size"]
-    
-    matrix_lr = float(context.run_config["matrix_lr"])
-    embedding_lr = float(context.run_config["embedding_lr"])
-    unembedding_lr = float(context.run_config["unembedding_lr"])
-    weight_decay = float(context.run_config.get("weight_decay", 0.0))
-    grad_clip = float(context.run_config.get("grad_clip", 1.0))
-    
-    max_seq_len = context.run_config["max_seq_len"]
-    total_batch_size = context.run_config["total_batch_size"]
+    device_batch_size = int(config["device_batch_size"])
+    max_seq_len = int(config["max_seq_len"])
+    total_batch_size = int(config["total_batch_size"])
+
+    matrix_lr = float(config["matrix_lr"])
+    embedding_lr = float(config["embedding_lr"])
+    unembedding_lr = float(config["unembedding_lr"])
+    scalar_lr = float(config["scalar_lr"])
+    weight_decay = float(config["weight_decay"])
+    grad_clip = float(config["grad_clip"])
 
     # Calculate gradient accumulation steps
     # Note: total_batch_size is global, so we divide by (device_batch_size * world_size)
@@ -84,7 +83,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
         log(INFO, f"Client {client_id}: {len(shard_assignments)} shards: {shard_assignments}")
 
     # Load model
-    model = get_model(model_type, max_seq_len)
+    model = get_model(config, max_seq_len)
     model.load_state_dict(msg.content["arrays"].to_torch_state_dict(), strict=True)
     model.to(device)
 
@@ -123,7 +122,8 @@ def run_training_process(rank, world_size, msg, context, result_dict):
         unembedding_lr=unembedding_lr,
         embedding_lr=embedding_lr,
         matrix_lr=matrix_lr,
-        weight_decay=weight_decay
+        weight_decay=weight_decay,
+        scalar_lr=scalar_lr,
     )
     adamw_optimizer, muon_optimizer = optimizers
     
