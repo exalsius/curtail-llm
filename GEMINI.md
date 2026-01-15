@@ -104,3 +104,4 @@ torchrun --nproc_per_node=2 scripts/base_train.py ...
 *   **Code Style:** Standard Python conventions.
 *   **Logging:** WandB is heavily used. Ensure `WANDB_API_KEY` is set if tracking is enabled.
 *   **Dependencies:** Always use `uv add` or `uv sync` to manage python packages.
+*   **Commit Messages:** Commit messages should be plain strings without prefixes like "feat:" or "fix:".
