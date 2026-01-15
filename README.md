@@ -62,19 +62,23 @@ redis-cli ping
 
 2. Start Flower SuperLink (coordinator):
 ```bash
+export WANDB_API_KEY=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
 flower-superlink --insecure
 ```
 
 3. Start SuperNodes (workers) on each GPU:
 ```bash
+source .venv/bin/activate
+export NANOCHAT_BASE_DIR=/workspace/cache/nanochat/
+
 # Node 0
-CUDA_VISIBLE_DEVICES=0 flower-supernode --insecure \
+CUDA_VISIBLE_DEVICES=0,1 flower-supernode --insecure \
   --superlink 127.0.0.1:9092 \
   --clientappio-api-address 127.0.0.1:9094 \
   --node-config 'name="client_0" partition-id=0' 
 
 # Node 1
-CUDA_VISIBLE_DEVICES=1 flower-supernode --insecure \
+CUDA_VISIBLE_DEVICES=2,3 flower-supernode --insecure \
   --superlink 127.0.0.1:9092 \
   --clientappio-api-address 127.0.0.1:9095 \
   --node-config 'name="client_1" partition-id=1'
