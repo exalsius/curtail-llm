@@ -154,7 +154,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     total_loss = 0.0
     batches_processed = 0
     shard_progress = {}  # Tracks absolute current_row
-    log_interval = context.run_config["log_interval"]
+    log_interval = context.run_config.get("log_interval", 1)
     last_log_time = time.time()
 
     # Setup Redis for logging

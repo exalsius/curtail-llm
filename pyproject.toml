@@ -69,11 +69,10 @@ clientapp = "pilot.client_app:app"
 redis_url = "redis://localhost:6379"
 round_min_duration = 60
 
-log_interval = 10  # Log client metrics every N batches
+
 wandb_project = "pilot_flwr"
 tokenizer_threads = 4
 tokenizer_batch_size = 128
-# wandb_entity = ""  # Optional wandb username / team name
 # debug_port_server = 5681
 # debug_port_client = 5682
 

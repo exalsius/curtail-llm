@@ -31,14 +31,12 @@ def main(grid: Grid, context: Context) -> None:
 
     # Initialize wandb
     wandb_project: str = context.run_config["wandb_project"]
-    wandb_entity: str | None = context.run_config.get("wandb_entity")
 
     # Create run name with hyperparameters
     run_name = f"bs{device_batch_size},tbs{total_batch_size},seq{max_seq_len}"
 
     wandb.init(
         project=wandb_project,
-        entity=wandb_entity,
         name=run_name,
         config={
             "matrix_lr": context.run_config["matrix_lr"],
@@ -69,7 +67,6 @@ def main(grid: Grid, context: Context) -> None:
         provisioner=provisioner,
         forecast_api_url=context.run_config["forecast_api_url"],
         wandb_project=wandb_project,
-        wandb_entity=wandb_entity,
     )
 
     # Extract scheduler config

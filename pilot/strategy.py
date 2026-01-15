@@ -109,7 +109,6 @@ class PilotAvg(Strategy):
         provisioner: Optional[ExlsProvisioner],
         forecast_api_url: str,
         wandb_project: Optional[str] = None,
-        wandb_entity: Optional[str] = None,
     ) -> None:
         self.clients: dict[str, Client] = clients
         self.dataset_name = dataset_name
@@ -120,7 +119,6 @@ class PilotAvg(Strategy):
         self.provisioner = provisioner
         self.forecast_api_url = forecast_api_url
         self.wandb_project = wandb_project
-        self.wandb_entity = wandb_entity
 
         self.redis_client = redis.from_url(redis_url)
         self.shard_manager = ShardManager(num_shards=num_shards)
