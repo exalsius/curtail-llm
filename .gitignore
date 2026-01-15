@@ -25,3 +25,4 @@ multirun/
 *.pid
 *.pids
 *_wandb_logs/
+dump.rdb
