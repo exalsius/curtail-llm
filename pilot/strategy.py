@@ -415,14 +415,10 @@ class PilotAvg(Strategy):
         self.summary()
         train_config = ConfigRecord() if train_config is None else train_config
 
-        stop_event = threading.Event()
-        threads = []
-
         if self.provisioner:
             provisioning_thread = threading.Thread(
                 target=_provisioning_task,
                 args=(
-                    stop_event,
                     self.clients,
                     self.redis_client,
                     self.provisioner,
@@ -431,15 +427,13 @@ class PilotAvg(Strategy):
                 daemon=True,
             )
             provisioning_thread.start()
-            threads.append(provisioning_thread)
 
         polling_thread = threading.Thread(
             target=_poll_logs,
-            args=(stop_event, self.redis_url, self.clients, self.log_queue),
+            args=(self.redis_url, self.clients, self.log_queue),
             daemon=True,
         )
         polling_thread.start()
-        threads.append(polling_thread)
 
         start = time.time()
         arrays = initial_arrays
@@ -451,9 +445,8 @@ class PilotAvg(Strategy):
                 break
 
             round_controller_thread = threading.Thread(
-                target=_round_controller,
+                target=_determine_round_end,
                 args=(
-                    stop_event,
                     grid,
                     self.redis_client,
                     self.round_min_duration,
@@ -476,11 +469,7 @@ class PilotAvg(Strategy):
             if agg_train_metrics is not None:
                 log(INFO, "\t└──> Aggregated MetricRecord: %s", agg_train_metrics)
 
-        stop_event.set()
-        for thread in threads:
-            thread.join(timeout=5)
-            if thread.is_alive():
-                log(INFO, f"Thread {thread.name} did not terminate in time.")
+
 
         log(INFO, f"\nStrategy execution finished in {time.time() - start:.2f}s")
         log(INFO, "\nSaving final model to disk...")
@@ -530,7 +519,6 @@ class PilotAvg(Strategy):
 
 
 def _poll_logs(
-    stop_event: threading.Event,
     redis_url: str,
     clients: dict[str, Client],
     log_queue: queue.Queue,
@@ -538,7 +526,7 @@ def _poll_logs(
     """Poll client logs from Redis and push them to a queue."""
     log(INFO, "Starting Redis log polling task...")
     redis_client = redis.from_url(redis_url, decode_responses=True)
-    while not stop_event.is_set():
+    while True:
         try:
             for client_name in clients.keys():
                 log_key = f"logs:{client_name}"
@@ -569,22 +557,20 @@ def _poll_logs(
 
 
 def _provisioning_task(
-    stop_event: threading.Event,
     clients: dict[str, Client],
     redis_client: Redis,
     provisioner: ExlsProvisioner,
     forecast_api_url: str,
 ):
     """Monitor clients for provisioning and deprovisioning decisions."""
-    while not stop_event.is_set():
+    while True:
         for client in clients.values():
             mci = get_mci(forecast_api_url, client.name)
             client.update_provisioning(redis_client, provisioner, mci)
         time.sleep(5)
 
 
-def _round_controller(
-    stop_event: threading.Event,
+def _determine_round_end(
     grid: Grid,
     redis_client: Redis,
     round_min_duration: float,
@@ -593,26 +579,15 @@ def _round_controller(
     log(INFO, f"Round monitor started for ROUND {current_round}")
     start_time = time.time()
 
-    # Wait for the minimum round duration
-    while not stop_event.is_set() and time.time() - start_time < round_min_duration:
-        time.sleep(1)
+    time.sleep(round_min_duration)
 
-    # Wait for more clients to join
-    while not stop_event.is_set() and len(list(grid.get_node_ids())) <= 1:
-        log(
-            INFO,
-            f"Round active since {int(time.time() - start_time)}s, waiting for more clients to join...",
-        )
+    # Wait for more than one client to have joined
+    while len(list(grid.get_node_ids())) <= 1:
+        log(INFO, f"Round active since {int(time.time() - start_time)}s, waiting for more clients to join...")
         time.sleep(10)
 
-    if not stop_event.is_set():
-        redis_client.publish(
-            f"round:{current_round}:stop", f"END ROUND {current_round}"
-        )
-        log(
-            INFO,
-            f"Signaled ROUND END after {int(time.time() - start_time)}s with {len(list(grid.get_node_ids()))} connected Flower clients.",
-        )
+    redis_client.publish(f"round:{current_round}:stop", f"END ROUND {current_round}")
+    log(INFO, f"Signaled ROUND END after {int(time.time() - start_time)}s with {len(list(grid.get_node_ids()))} connected Flower clients.")
 
 
 def get_mci(base_url: str, client_name: str) -> float:
