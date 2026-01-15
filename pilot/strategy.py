@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -42,6 +43,7 @@ class Client:
     name: str
     provision_threshold: int
     deprovision_threshold: int
+    redis_url: str
     flwr_node_id: Optional[FlwrNodeId] = None  # Set when client connects to Flower Grid
     _state: Literal["OFF", "STARTING", "IDLE", "TRAINING"] = "OFF"
 
@@ -57,7 +59,7 @@ class Client:
         # Check whether the client should be deprovisioned
         else:
             if carbon_intensity > self.deprovision_threshold:
-                asyncio.create_task(self._deprovision(redis_client, provisioner))
+                threading.Thread(target=self._deprovision, args=(provisioner,)).start()
 
     def start_training(self):
         assert (
@@ -71,17 +73,18 @@ class Client:
         ), f"Cannot stop training: client '{self.name}' is {self._state}, expected TRAINING"
         self._state = "IDLE"
 
-    async def _deprovision(self, redis_client: Redis, provisioner: ExlsProvisioner):
+    def _deprovision(self, provisioner: ExlsProvisioner):
         """Gracefully deprovision a client by signaling stop and waiting for completion."""
+        redis_client = redis.from_url(self.redis_url)
         # Wrap up current round in case the client is still training
         if self._state == "TRAINING":
             log(INFO, f"Signaling client '{self.name}' to stop training")
-            await redis_client.publish(f"{self.name}:stop", "DEPROVISION {self.name}")
+            redis_client.publish(f"{self.name}:stop", "DEPROVISION {self.name}")
 
             # Wait for client to become IDLE (set by train loop after results have been returned)
             wait_start = time.time()
             while self._state == "TRAINING" and (time.time() - wait_start) < 60:
-                await asyncio.sleep(1)
+                time.sleep(1)
             if self._state == "TRAINING":
                 log(INFO, f"Client '{self.name}' did not respond within timeout")
 
@@ -387,7 +390,7 @@ class PilotAvg(Strategy):
     ) -> tuple[Optional[ArrayRecord], Optional[MetricRecord]]:
         return None, None  # not used, server-side eval only
 
-    async def start(
+    def start(
         self,
         grid: Grid,
         initial_arrays: ArrayRecord,
@@ -407,37 +410,59 @@ class PilotAvg(Strategy):
         self.summary()
         train_config = ConfigRecord() if train_config is None else train_config
 
-        provisioning_task = None
+        stop_event = threading.Event()
+        threads = []
+
         if self.provisioner:
-            provisioning_task = asyncio.create_task(
-                _provisioning_task(
+            provisioning_thread = threading.Thread(
+                target=_provisioning_task,
+                args=(
+                    stop_event,
                     self.clients,
                     self.redis_client,
                     self.provisioner,
                     self.forecast_api_url,
-                )
+                ),
+                daemon=True,
             )
+            provisioning_thread.start()
+            threads.append(provisioning_thread)
 
-        log_polling_task = asyncio.create_task(_poll_logs(self.redis_url, self.clients))
+        polling_thread = threading.Thread(
+            target=_poll_logs,
+            args=(stop_event, self.redis_url, self.clients),
+            daemon=True,
+        )
+        polling_thread.start()
+        threads.append(polling_thread)
 
         start = time.time()
         arrays = initial_arrays
         for current_round in range(1, int(num_rounds + 1)):
             log(INFO, f"\n[ROUND {current_round}]")
 
-            # Check if all shards are complete
             if self.shard_manager.is_complete():
                 log(INFO, "All data shards processed. Terminating training.")
                 break
 
-            messages = self.configure_train(current_round, arrays, train_config, grid)
-            round_controller = asyncio.create_task(
-                _round_controller(
-                    grid, self.redis_client, self.round_min_duration, current_round
-                )
+            round_controller_thread = threading.Thread(
+                target=_round_controller,
+                args=(
+                    stop_event,
+                    grid,
+                    self.redis_client,
+                    self.round_min_duration,
+                    current_round,
+                ),
+                daemon=True,
             )
+            round_controller_thread.start()
+
+            messages = self.configure_train(current_round, arrays, train_config, grid)
             train_replies = grid.send_and_receive(messages=messages, timeout=timeout)
-            round_controller.cancel()  # once grid.send_and_receive() has returned, the monitor is obsolete
+            
+            # The round controller's job is done once send_and_receive returns, but we can't easily kill it.
+            # It will terminate on its own with the main thread, or after its own timeout.
 
             arrays, agg_train_metrics = self.aggregate_train(
                 current_round, train_replies
@@ -446,10 +471,12 @@ class PilotAvg(Strategy):
             if agg_train_metrics is not None:
                 log(INFO, "\t└──> Aggregated MetricRecord: %s", agg_train_metrics)
 
-        if provisioning_task:
-            provisioning_task.cancel()
-        if log_polling_task:
-            log_polling_task.cancel()
+        stop_event.set()
+        for thread in threads:
+            thread.join(timeout=5)
+            if thread.is_alive():
+                log(INFO, f"Thread {thread.name} did not terminate in time.")
+
         log(INFO, f"\nStrategy execution finished in {time.time() - start:.2f}s")
         log(INFO, "\nSaving final model to disk...")
         torch.save(arrays.to_torch_state_dict(), "final_model.pt")
@@ -497,20 +524,19 @@ class PilotAvg(Strategy):
         return valid_replies, error_replies
 
 
-async def _poll_logs(redis_url: str, clients: dict[str, Client]):
+def _poll_logs(stop_event: threading.Event, redis_url: str, clients: dict[str, Client]):
     """Poll client logs from Redis and log them to wandb."""
     log(INFO, "Starting Redis log polling task...")
-    redis_client = redis.asyncio.from_url(redis_url, decode_responses=True)
-    while True:
+    redis_client = redis.from_url(redis_url, decode_responses=True)
+    while not stop_event.is_set():
         try:
             for client_name in clients.keys():
                 log_key = f"logs:{client_name}"
-
-                # Fetch all logs in a single transaction
+                
                 pipe = redis_client.pipeline()
                 pipe.lrange(log_key, 0, -1)
-                pipe.ltrim(log_key, 1, 0)  # Atomically trim the list
-                log_entries_str, _ = await pipe.execute()
+                pipe.ltrim(log_key, 1, 0)
+                log_entries_str = pipe.execute()[0]
 
                 if log_entries_str:
                     log(
@@ -523,50 +549,52 @@ async def _poll_logs(redis_url: str, clients: dict[str, Client]):
                             wandb.log(log_entry, step=log_entry["step"])
                         except json.JSONDecodeError:
                             log(INFO, f"Could not decode log entry: {log_entry_str}")
-
-            await asyncio.sleep(10)
-        except asyncio.CancelledError:
-            log(INFO, "Log polling task cancelled.")
-            break
+            
+            time.sleep(10)
         except Exception as e:
             log(INFO, f"Error in log polling task: {e}")
-            await asyncio.sleep(30)  # Wait longer before retrying
+            time.sleep(30)
 
 
-async def _provisioning_task(
+def _provisioning_task(
+    stop_event: threading.Event,
     clients: dict[str, Client],
     redis_client: Redis,
     provisioner: ExlsProvisioner,
     forecast_api_url: str,
 ):
     """Monitor clients for provisioning and deprovisioning decisions."""
-    while True:
+    while not stop_event.is_set():
         for client in clients.values():
             mci = get_mci(forecast_api_url, client.name)
             client.update_provisioning(redis_client, provisioner, mci)
-        await asyncio.sleep(5)
+        time.sleep(5)
 
 
-async def _round_controller(
-    grid: Grid, redis_client: Redis, round_min_duration: float, current_round: int
+def _round_controller(
+    stop_event: threading.Event, grid: Grid, redis_client: Redis, round_min_duration: float, current_round: int
 ):
     log(INFO, f"Round monitor started for ROUND {current_round}")
-    start = time.time()
-    await asyncio.sleep(round_min_duration)
-    while active_flwr_nodes := len(list(grid.get_node_ids())) <= 1:
+    start_time = time.time()
+    
+    # Wait for the minimum round duration
+    while not stop_event.is_set() and time.time() - start_time < round_min_duration:
+        time.sleep(1)
+
+    # Wait for more clients to join
+    while not stop_event.is_set() and len(list(grid.get_node_ids())) <= 1:
         log(
             INFO,
-            f"Round active since {int(time.time() - start)}s, waiting for more clients to join...",
+            f"Round active since {int(time.time() - start_time)}s, waiting for more clients to join...",
         )
-        await asyncio.sleep(10)
-    await redis_client.publish(
-        f"round:{current_round}:stop", f"END ROUND {current_round}"
-    )
-    log(
-        INFO,
-        f"Signaled ROUND END after {int(time.time() - start)}s with {active_flwr_nodes} connected Flower clients.",
-    )
+        time.sleep(10)
 
+    if not stop_event.is_set():
+        redis_client.publish(f"round:{current_round}:stop", f"END ROUND {current_round}")
+        log(
+            INFO,
+            f"Signaled ROUND END after {int(time.time() - start_time)}s with {len(list(grid.get_node_ids()))} connected Flower clients.",
+        )
 
 def get_mci(base_url: str, client_name: str) -> float:
     """Fetch current MCI index for a client's microgrid."""

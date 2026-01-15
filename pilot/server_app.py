@@ -1,4 +1,3 @@
-import asyncio
 from collections import defaultdict
 from logging import INFO
 
@@ -98,11 +97,11 @@ def main(grid: Grid, context: Context) -> None:
     # Load global model
     global_model = get_model(train_config_dict, max_seq_len)
 
-    asyncio.run(strategy.start(
+    strategy.start(
         grid=grid,
         initial_arrays=ArrayRecord(global_model.state_dict()),
         train_config=ConfigRecord(train_config_dict),
-    ))
+    )
 
     # Finish wandb run
     wandb.finish()
@@ -118,9 +117,10 @@ def _clients_from_run_config(flat_dict: dict) -> tuple[dict[str, Client], dict[s
 
     clients = {}
     node_id_mapping = {}
+    redis_url = flat_dict["redis_url"]
     for client_name, fields in fields_by_client.items():
         exls_node_id = fields.pop("exls_node_id")
         node_id_mapping[client_name] = exls_node_id
-        clients[client_name] = Client(name=client_name, **fields)
+        clients[client_name] = Client(name=client_name, redis_url=redis_url, **fields)
 
     return clients, node_id_mapping
