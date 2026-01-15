@@ -19,7 +19,6 @@ app = ServerApp()
 @app.main()
 def main(grid: Grid, context: Context) -> None:
     """Main entry point for the ServerApp."""
-    lr: float = context.run_config["lr"]
     num_shards: int = context.run_config["num_shards"]
     device_batch_size: int = context.run_config["device_batch_size"]
     total_batch_size: int = context.run_config["total_batch_size"]
@@ -44,7 +43,9 @@ def main(grid: Grid, context: Context) -> None:
         name=run_name,
         group=run_name,  # Group all runs together
         config={
-            "learning_rate": lr,
+            "matrix_lr": context.run_config["matrix_lr"],
+            "embedding_lr": context.run_config["embedding_lr"],
+            "unembedding_lr": context.run_config["unembedding_lr"],
             "device_batch_size": device_batch_size,
             "total_batch_size": total_batch_size,
             "max_seq_len": max_seq_len,

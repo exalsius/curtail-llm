@@ -346,6 +346,11 @@ class PilotAvg(Strategy):
         for current_round in range(1, int(num_rounds + 1)):
             log(INFO, f"\n[ROUND {current_round}]")
 
+            # Check if all shards are complete
+            if self.shard_manager.is_complete():
+                log(INFO, "All data shards processed. Terminating training.")
+                break
+
             messages = self.configure_train(current_round, arrays, train_config, grid)
             round_controller = asyncio.create_task(_round_controller(grid, self.redis_client, self.round_min_duration, current_round))
             train_replies = grid.send_and_receive(messages=messages, timeout=timeout)

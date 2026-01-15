@@ -90,7 +90,7 @@ num_shards = 240  # Number of parquet files to use (each ~53k rows)
 matrix_lr = 0.02
 embedding_lr = 0.2
 unembedding_lr = 0.004
-device_batch_size = 2  # Small batch for testing
+device_batch_size = 8
 max_seq_len = 2048
 total_batch_size = 524288  # Matches nanochat d20 default (524k tokens)
 
