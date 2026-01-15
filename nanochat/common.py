@@ -44,7 +44,7 @@ def setup_default_logging():
         handlers=[handler]
     )
 
-setup_default_logging()
+# setup_default_logging()
 logger = logging.getLogger(__name__)
 
 def get_base_dir():

@@ -17,7 +17,7 @@ from tqdm import tqdm
 
 from pilot.model import get_model
 from pilot.data import fl_shard_dataloader
-from pilot.wandb_logs import WandbLogs
+
 
 app = ClientApp()
 
@@ -145,9 +145,10 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     log_interval = context.run_config["log_interval"]
     last_log_time = time.time()
 
-    # Collect metrics for server-side logging in a local file
-    wandb_logs = WandbLogs(log_dir=f"./{node_name}_wandb_logs")
-    wandb_logs.clear_logs()
+    # Setup Redis for logging
+    redis_client = redis.from_url(redis_url)
+    log_key = f"logs:{node_name}"
+    redis_client.delete(log_key)
 
     # Tqdm only on rank 0
     iterator = tqdm(trainloader, desc="Training") if rank == 0 else trainloader
@@ -207,19 +208,17 @@ def run_training_process(rank, world_size, msg, context, result_dict):
 
                 loss_scalar = loss.item() * gradient_accumulation_steps
 
-                wandb_logs.save_log(
-                    {
-                        "step": current_step,
-                        "train/loss": loss_scalar,
-                        "train/ppl": math.exp(loss_scalar),
-                        "train/matrix_lr": matrix_lr,
-                        "train/momentum": muon_momentum,
-                        "train/grad_norm": grad_norm,
-                        "train/tok_per_sec": tok_per_sec,
-                        "batches_processed": batches_processed,
-                        "current_shard": shard_id,
-                    }
-                )
+                log_entry = {
+                    "step": current_step,
+                    f"client_{client_id}/train_loss": loss_scalar,
+                    f"client_{client_id}/train_ppl": math.exp(loss_scalar),
+                    f"client_{client_id}/matrix_lr": matrix_lr,
+                    f"client_{client_id}/momentum": muon_momentum,
+                    f"client_{client_id}/grad_norm": grad_norm,
+                    f"client_{client_id}/tok_per_sec": tok_per_sec,
+                }
+                redis_client.rpush(log_key, json.dumps(log_entry))
+
 
         total_loss += loss.item() * gradient_accumulation_steps
 
@@ -342,11 +341,9 @@ def query(msg: Message, context: Context):
             reply_to=msg,
         )
     elif query_type == "get_logs":
-        log(INFO, f"CLIENT {node_name}: Received get_logs query")
-        wandb_logs = WandbLogs(log_dir=f"./{node_name}_wandb_logs")
-        logs = wandb_logs.get_and_clear_logs()
+        log(INFO, f"CLIENT {node_name}: Received get_logs query (deprecated)")
         return Message(
-            content=RecordDict({"logs": json.dumps(logs)}),
+            content=RecordDict({"logs": json.dumps([])}),
             reply_to=msg,
         )
     else:
