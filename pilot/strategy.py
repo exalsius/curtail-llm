@@ -372,6 +372,11 @@ class PilotAvg(Strategy):
                         "actual_train_time"
                     ]
 
+            # Drain the log queue and add to the log_dict
+            while not self.log_queue.empty():
+                log_entry = self.log_queue.get()
+                log_dict.update(log_entry)
+
             # Use global step for summary
             summary_step = (
                 self.global_tokens_processed // self.total_batch_size
@@ -462,7 +467,7 @@ class PilotAvg(Strategy):
 
             messages = self.configure_train(current_round, arrays, train_config, grid)
             train_replies = grid.send_and_receive(messages=messages, timeout=timeout)
-            
+
             # The round controller's job is done once send_and_receive returns, but we can't easily kill it.
             # It will terminate on its own with the main thread, or after its own timeout.
 
@@ -526,15 +531,20 @@ class PilotAvg(Strategy):
         return valid_replies, error_replies
 
 
-def _poll_logs(stop_event: threading.Event, redis_url: str, clients: dict[str, Client]):
-    """Poll client logs from Redis and log them to wandb."""
+def _poll_logs(
+    stop_event: threading.Event,
+    redis_url: str,
+    clients: dict[str, Client],
+    log_queue: queue.Queue,
+):
+    """Poll client logs from Redis and push them to a queue."""
     log(INFO, "Starting Redis log polling task...")
     redis_client = redis.from_url(redis_url, decode_responses=True)
     while not stop_event.is_set():
         try:
             for client_name in clients.keys():
                 log_key = f"logs:{client_name}"
-                
+
                 pipe = redis_client.pipeline()
                 pipe.lrange(log_key, 0, -1)
                 pipe.ltrim(log_key, 1, 0)
@@ -548,10 +558,12 @@ def _poll_logs(stop_event: threading.Event, redis_url: str, clients: dict[str, C
                     for log_entry_str in log_entries_str:
                         try:
                             log_entry = json.loads(log_entry_str)
-                            wandb.log(log_entry, step=log_entry["step"])
+                            # The step value is removed from the client-side logs
+                            log_entry.pop("step", None)
+                            log_queue.put(log_entry)
                         except json.JSONDecodeError:
                             log(INFO, f"Could not decode log entry: {log_entry_str}")
-            
+
             time.sleep(10)
         except Exception as e:
             log(INFO, f"Error in log polling task: {e}")
@@ -574,11 +586,15 @@ def _provisioning_task(
 
 
 def _round_controller(
-    stop_event: threading.Event, grid: Grid, redis_client: Redis, round_min_duration: float, current_round: int
+    stop_event: threading.Event,
+    grid: Grid,
+    redis_client: Redis,
+    round_min_duration: float,
+    current_round: int,
 ):
     log(INFO, f"Round monitor started for ROUND {current_round}")
     start_time = time.time()
-    
+
     # Wait for the minimum round duration
     while not stop_event.is_set() and time.time() - start_time < round_min_duration:
         time.sleep(1)
@@ -592,11 +608,14 @@ def _round_controller(
         time.sleep(10)
 
     if not stop_event.is_set():
-        redis_client.publish(f"round:{current_round}:stop", f"END ROUND {current_round}")
+        redis_client.publish(
+            f"round:{current_round}:stop", f"END ROUND {current_round}"
+        )
         log(
             INFO,
             f"Signaled ROUND END after {int(time.time() - start_time)}s with {len(list(grid.get_node_ids()))} connected Flower clients.",
         )
+
 
 def get_mci(base_url: str, client_name: str) -> float:
     """Fetch current MCI index for a client's microgrid."""
