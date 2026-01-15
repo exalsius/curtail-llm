@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from pilot.model import get_model
 from pilot.data import fl_shard_dataloader
+from pilot.wandb_logs import WandbLogs
 
 app = ClientApp()
 
@@ -143,9 +144,10 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     shard_progress = {}  # Tracks absolute current_row
     log_interval = context.run_config["log_interval"]
     last_log_time = time.time()
-    
-    # Collect metrics for server-side logging
-    metrics_history = []
+
+    # Collect metrics for server-side logging in a local file
+    wandb_logs = WandbLogs(log_dir=f"./{node_name}_wandb_logs")
+    wandb_logs.clear_logs()
 
     # Tqdm only on rank 0
     iterator = tqdm(trainloader, desc="Training") if rank == 0 else trainloader
@@ -163,11 +165,13 @@ def run_training_process(rank, world_size, msg, context, result_dict):
 
         if batches_processed % gradient_accumulation_steps == 0:
             if grad_clip > 0:
-                grad_norm_tensor = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                grad_norm_tensor = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), grad_clip
+                )
                 grad_norm = grad_norm_tensor.item()
             else:
                 grad_norm = 0.0
-            
+
             for opt in optimizers:
                 opt.step()
             model.zero_grad(set_to_none=True)
@@ -176,40 +180,57 @@ def run_training_process(rank, world_size, msg, context, result_dict):
             if rank == 0 and log_interval and step_count % log_interval == 0:
                 current_time = time.time()
                 dt = current_time - last_log_time
-                
+
                 # Calculate global step for logging
-                tokens_processed_locally = batches_processed * device_batch_size * max_seq_len * world_size
-                total_global_tokens = global_tokens_processed_start + tokens_processed_locally
+                tokens_processed_locally = (
+                    batches_processed
+                    * device_batch_size
+                    * max_seq_len
+                    * world_size
+                )
+                total_global_tokens = (
+                    global_tokens_processed_start + tokens_processed_locally
+                )
                 current_step = total_global_tokens // total_batch_size
-                
+
                 # Calculate tokens per second (approximate based on fixed batch size and max length)
                 # Note: Multiply by world_size for global throughput
                 # dt covers 'log_interval' steps, each having 'gradient_accumulation_steps' micro-batches
-                tokens_processed_since_log = log_interval * gradient_accumulation_steps * device_batch_size * max_seq_len * world_size
+                tokens_processed_since_log = (
+                    log_interval
+                    * gradient_accumulation_steps
+                    * device_batch_size
+                    * max_seq_len
+                    * world_size
+                )
                 tok_per_sec = tokens_processed_since_log / dt
 
                 loss_scalar = loss.item() * gradient_accumulation_steps
-                
-                metrics_history.append({
-                    "step": current_step,
-                    "train/loss": loss_scalar,
-                    "train/ppl": math.exp(loss_scalar),
-                    "train/matrix_lr": matrix_lr,
-                    "train/momentum": muon_momentum,
-                    "train/grad_norm": grad_norm,
-                    "train/tok_per_sec": tok_per_sec,
-                    "batches_processed": batches_processed,
-                    "current_shard": shard_id,
-                })
+
+                wandb_logs.save_log(
+                    {
+                        "step": current_step,
+                        "train/loss": loss_scalar,
+                        "train/ppl": math.exp(loss_scalar),
+                        "train/matrix_lr": matrix_lr,
+                        "train/momentum": muon_momentum,
+                        "train/grad_norm": grad_norm,
+                        "train/tok_per_sec": tok_per_sec,
+                        "batches_processed": batches_processed,
+                        "current_shard": shard_id,
+                    }
+                )
 
         total_loss += loss.item() * gradient_accumulation_steps
-        
+
         if rank == 0:
-            iterator.set_postfix({
-                "loss": loss.item() * gradient_accumulation_steps,
-                "shard": shard_id,
-                "shard_progress": f"{shard_progress_val:.1%}"
-            })
+            iterator.set_postfix(
+                {
+                    "loss": loss.item() * gradient_accumulation_steps,
+                    "shard": shard_id,
+                    "shard_progress": f"{shard_progress_val:.1%}",
+                }
+            )
 
         # Track progress (all ranks need to track this for resumption, but we report rank 0's view or similar)
         # Actually shard_progress depends on rank striding.
@@ -218,8 +239,11 @@ def run_training_process(rank, world_size, msg, context, result_dict):
 
         # Check for stop signal (non-blocking)
         redis_msg = pubsub.get_message(timeout=0)
-        if redis_msg and redis_msg['type'] == 'message':
-            log(INFO, f"Rank {rank}: Stop signal received ({redis_msg['data'].decode('utf-8')}) after batch {batches_processed}")
+        if redis_msg and redis_msg["type"] == "message":
+            log(
+                INFO,
+                f"Rank {rank}: Stop signal received ({redis_msg['data'].decode('utf-8')}) after batch {batches_processed}",
+            )
             break
 
     # Flush gradients
@@ -237,7 +261,9 @@ def run_training_process(rank, world_size, msg, context, result_dict):
         log(INFO, f"Client {client_id}: {batches_processed} batches")
 
         new_cumulative_batches = cumulative_batches + batches_processed
-        context.state["cumulative_batches"] = MetricRecord({"cumulative_batches": new_cumulative_batches})
+        context.state["cumulative_batches"] = MetricRecord(
+            {"cumulative_batches": new_cumulative_batches}
+        )
 
         # Convert shard_progress to two parallel lists
         shard_ids = list(shard_progress.keys())
@@ -245,24 +271,29 @@ def run_training_process(rank, world_size, msg, context, result_dict):
 
         # Unwrap model if DDP
         state_dict = getattr(model, "module", model).state_dict()
-        
-        tokens_processed_round = batches_processed * device_batch_size * max_seq_len * world_size
+
+        tokens_processed_round = (
+            batches_processed * device_batch_size * max_seq_len * world_size
+        )
 
         result_dict["message"] = Message(
-            content=RecordDict({
-                "arrays": ArrayRecord(state_dict),
-                "metrics": MetricRecord({
-                    "client_id": client_id,
-                    "node_name": node_name,
-                    "train_loss": avg_loss,
-                    "batches_processed": batches_processed,
-                    "num_tokens_processed": tokens_processed_round,
-                    "shard_ids": shard_ids,
-                    "shard_rows": shard_rows,
-                    "cumulative_batches": new_cumulative_batches,
-                    "metrics_history": json.dumps(metrics_history),
-                }),
-            }),
+            content=RecordDict(
+                {
+                    "arrays": ArrayRecord(state_dict),
+                    "metrics": MetricRecord(
+                        {
+                            "client_id": client_id,
+                            "node_name": node_name,
+                            "train_loss": avg_loss,
+                            "batches_processed": batches_processed,
+                            "num_tokens_processed": tokens_processed_round,
+                            "shard_ids": shard_ids,
+                            "shard_rows": shard_rows,
+                            "cumulative_batches": new_cumulative_batches,
+                        }
+                    ),
+                }
+            ),
             reply_to=msg,
         )
 
@@ -279,7 +310,12 @@ def train(msg: Message, context: Context):
         log(INFO, f"Spawning {num_gpus} processes for DDP training")
         manager = mp.Manager()
         result_dict = manager.dict()
-        mp.spawn(run_training_process, args=(num_gpus, msg, context, result_dict), nprocs=num_gpus, join=True)
+        mp.spawn(
+            run_training_process,
+            args=(num_gpus, msg, context, result_dict),
+            nprocs=num_gpus,
+            join=True,
+        )
         if "message" in result_dict:
             return result_dict["message"]
         else:
@@ -294,6 +330,31 @@ def train(msg: Message, context: Context):
 
 @app.query()
 def query(msg: Message, context: Context):
-    name = context.node_config.get("name", f"client_{context.node_config.get('partition-id', 0)}")
-    log(INFO, f"HI! I'm CLIENT {name}")
-    return Message(content=RecordDict({"config": ConfigRecord({"name": name})}), reply_to=msg)
+    query_type = msg.content["config"].get("type", "health")
+    node_name = context.node_config.get(
+        "name", f"client_{context.node_config.get('partition-id', 0)}"
+    )
+
+    if query_type == "health":
+        log(INFO, f"HI! I'm CLIENT {node_name}")
+        return Message(
+            content=RecordDict({"config": ConfigRecord({"name": node_name})}),
+            reply_to=msg,
+        )
+    elif query_type == "get_logs":
+        log(INFO, f"CLIENT {node_name}: Received get_logs query")
+        wandb_logs = WandbLogs(log_dir=f"./{node_name}_wandb_logs")
+        logs = wandb_logs.get_and_clear_logs()
+        return Message(
+            content=RecordDict({"logs": json.dumps(logs)}),
+            reply_to=msg,
+        )
+    else:
+        log(
+            INFO,
+            f"CLIENT {node_name}: Received unknown query type '{query_type}'",
+        )
+        return Message(
+            content=RecordDict({}),
+            reply_to=msg,
+        )

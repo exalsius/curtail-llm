@@ -11,7 +11,15 @@ import requests
 import torch
 import wandb
 
-from flwr.common import log, ArrayRecord, ConfigRecord, Message, RecordDict, MessageType, MetricRecord
+from flwr.common import (
+    log,
+    ArrayRecord,
+    ConfigRecord,
+    Message,
+    RecordDict,
+    MessageType,
+    MetricRecord,
+)
 from flwr.server import Grid
 from flwr.serverapp.strategy import Strategy
 from flwr.serverapp.strategy.strategy_utils import aggregate_arrayrecords, aggregate_metricrecords, config_to_str, \
@@ -236,45 +244,31 @@ class PilotAvg(Strategy):
 
         arrays, metrics = None, None
         if valid_replies:
-            client_histories = []
             for reply in valid_replies:
                 # Update shard states from worker results
                 metrics: MetricRecord = reply.content["metrics"]
                 self.shard_manager.update(metrics["shard_ids"], metrics["shard_rows"])
-                
+
                 # Accumulate global tokens
                 if "num_tokens_processed" in metrics:
-                    self.global_tokens_processed += int(metrics["num_tokens_processed"])
-                
-                # Collect history
-                if "metrics_history" in metrics:
-                    hist = json.loads(metrics["metrics_history"])
-                    client_histories.extend(hist)
+                    self.global_tokens_processed += int(
+                        metrics["num_tokens_processed"]
+                    )
 
             progress = self.shard_manager.get_progress_summary()
-            log(INFO, f"[Round {server_round}] Shard progress: {progress['progress']:.1%} "
-                      f"({progress['processed_rows']:,}/{progress['total_rows']:,} rows, "
-                      f"{progress['num_complete']}/{progress['num_total']} complete)")
-            
-            # Aggregate and log client histories (high-freq training curves)
-            step_map = defaultdict(lambda: defaultdict(list))
-            for entry in client_histories:
-                step = entry["step"]
-                for k, v in entry.items():
-                    if k != "step" and isinstance(v, (int, float)) and k != "current_shard":
-                        step_map[step][k].append(v)
-            
-            sorted_steps = sorted(step_map.keys())
-            for step in sorted_steps:
-                agg_entry = {}
-                for k, values in step_map[step].items():
-                     agg_entry[k] = sum(values) / len(values)
-                wandb.log(agg_entry, step=step)
+            log(
+                INFO,
+                f"[Round {server_round}] Shard progress: {progress['progress']:.1%} "
+                f"({progress['processed_rows']:,}/{progress['total_rows']:,} rows, "
+                f"{progress['num_complete']}/{progress['num_total']} complete)",
+            )
 
             # Default FedAvg aggregation
             reply_contents = [msg.content for msg in valid_replies]
             arrays = aggregate_arrayrecords(reply_contents, self.weighted_by_key)
-            metrics = aggregate_metricrecords(reply_contents, self.weighted_by_key)  # can be customized
+            metrics = aggregate_metricrecords(
+                reply_contents, self.weighted_by_key
+            )  # can be customized
 
             # Log to wandb
             log_dict = {
@@ -330,16 +324,26 @@ class PilotAvg(Strategy):
     ):
         """Run time-based federated learning."""
         log(INFO, f"Starting {self.__class__.__name__} strategy:")
-        log(INFO, f"\t├── ArrayRecord ({sum(len(array.data) for array in initial_arrays.values()) / (1024 ** 2):.2f} MB)")
+        log(
+            INFO,
+            f"\t├── ArrayRecord ({sum(len(array.data) for array in initial_arrays.values()) / (1024 ** 2):.2f} MB)",
+        )
         log(INFO, f"\t├── ConfigRecord (train): {config_to_str(train_config)}")
         self.summary()
         train_config = ConfigRecord() if train_config is None else train_config
 
         provisioning_task = None
         if self.provisioner:
-            provisioning_task = asyncio.create_task(_provisioning_task(
-                self.clients, self.redis_client, self.provisioner, self.forecast_api_url
-            ))
+            provisioning_task = asyncio.create_task(
+                _provisioning_task(
+                    self.clients,
+                    self.redis_client,
+                    self.provisioner,
+                    self.forecast_api_url,
+                )
+            )
+
+        log_polling_task = asyncio.create_task(self._poll_logs(grid))
 
         start = time.time()
         arrays = initial_arrays
@@ -351,20 +355,64 @@ class PilotAvg(Strategy):
                 log(INFO, "All data shards processed. Terminating training.")
                 break
 
-            messages = self.configure_train(current_round, arrays, train_config, grid)
-            round_controller = asyncio.create_task(_round_controller(grid, self.redis_client, self.round_min_duration, current_round))
+            messages = self.configure_train(
+                current_round, arrays, train_config, grid
+            )
+            round_controller = asyncio.create_task(
+                _round_controller(
+                    grid, self.redis_client, self.round_min_duration, current_round
+                )
+            )
             train_replies = grid.send_and_receive(messages=messages, timeout=timeout)
             round_controller.cancel()  # once grid.send_and_receive() has returned, the monitor is obsolete
 
-            arrays, agg_train_metrics = self.aggregate_train(current_round, train_replies)
+            arrays, agg_train_metrics = self.aggregate_train(
+                current_round, train_replies
+            )
             if agg_train_metrics is not None:
                 log(INFO, "\t└──> Aggregated MetricRecord: %s", agg_train_metrics)
 
         if provisioning_task:
             provisioning_task.cancel()
+        if log_polling_task:
+            log_polling_task.cancel()
         log(INFO, f"\nStrategy execution finished in {time.time() - start:.2f}s")
         log(INFO, "\nSaving final model to disk...")
         torch.save(arrays.to_torch_state_dict(), "final_model.pt")
+
+    async def _poll_logs(self, grid: Grid):
+        while True:
+            await asyncio.sleep(30)  # Poll every 30 seconds
+            training_clients = [
+                client
+                for client in self.clients.values()
+                if client._state == "TRAINING" and client.flwr_node_id is not None
+            ]
+            if not training_clients:
+                continue
+
+            log(INFO, "Polling clients for logs...")
+            messages = []
+            for client in training_clients:
+                content = RecordDict(
+                    {"config": ConfigRecord({"type": "get_logs"})}
+                )
+                messages.append(
+                    Message(
+                        content=content,
+                        message_type=MessageType.QUERY,
+                        dst_node_id=client.flwr_node_id,
+                    )
+                )
+
+            query_replies = grid.send_and_receive(messages=messages, timeout=10)
+
+            for reply in query_replies:
+                if "logs" in reply.content:
+                    logs = json.loads(reply.content["logs"])
+                    for log_entry in logs:
+                        wandb.log(log_entry, step=log_entry["step"])
+
 
     def _check_and_log_replies(self, replies: Iterable[Message]) -> tuple[list[Message], list[Message]]:
         """Copied from FedAvg"""
