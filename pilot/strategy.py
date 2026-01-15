@@ -1,5 +1,6 @@
 import asyncio
 import json
+import queue
 import threading
 import time
 from collections import defaultdict
@@ -123,6 +124,7 @@ class PilotAvg(Strategy):
 
         self.redis_client = redis.from_url(redis_url)
         self.shard_manager = ShardManager(num_shards=num_shards)
+        self.log_queue = queue.Queue()
         self.weighted_by_key = "batches_processed"
         self.global_tokens_processed = 0
 
@@ -430,7 +432,7 @@ class PilotAvg(Strategy):
 
         polling_thread = threading.Thread(
             target=_poll_logs,
-            args=(stop_event, self.redis_url, self.clients),
+            args=(stop_event, self.redis_url, self.clients, self.log_queue),
             daemon=True,
         )
         polling_thread.start()
