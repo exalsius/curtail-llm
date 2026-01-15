@@ -7,6 +7,7 @@ from logging import INFO
 from typing import Optional, Literal, Iterable
 
 import redis
+import redis.asyncio
 import requests
 import torch
 import wandb
@@ -22,8 +23,12 @@ from flwr.common import (
 )
 from flwr.server import Grid
 from flwr.serverapp.strategy import Strategy
-from flwr.serverapp.strategy.strategy_utils import aggregate_arrayrecords, aggregate_metricrecords, config_to_str, \
-    validate_message_reply_consistency
+from flwr.serverapp.strategy.strategy_utils import (
+    aggregate_arrayrecords,
+    aggregate_metricrecords,
+    config_to_str,
+    validate_message_reply_consistency,
+)
 from redis import Redis
 
 from pilot.data import ShardManager
@@ -40,7 +45,9 @@ class Client:
     flwr_node_id: Optional[FlwrNodeId] = None  # Set when client connects to Flower Grid
     _state: Literal["OFF", "STARTING", "IDLE", "TRAINING"] = "OFF"
 
-    def update_provisioning(self, redis_client: Redis, provisioner: ExlsProvisioner, carbon_intensity: float):
+    def update_provisioning(
+        self, redis_client: Redis, provisioner: ExlsProvisioner, carbon_intensity: float
+    ):
         # Check whether the client should be provisioned
         if self._state == "OFF":
             if carbon_intensity < self.provision_threshold:
@@ -53,11 +60,15 @@ class Client:
                 asyncio.create_task(self._deprovision(redis_client, provisioner))
 
     def start_training(self):
-        assert self._state == "IDLE", f"Cannot start training: client '{self.name}' is {self._state}, expected IDLE"
+        assert (
+            self._state == "IDLE"
+        ), f"Cannot start training: client '{self.name}' is {self._state}, expected IDLE"
         self._state = "TRAINING"
 
     def stop_training(self):
-        assert self._state == "TRAINING", f"Cannot stop training: client '{self.name}' is {self._state}, expected TRAINING"
+        assert (
+            self._state == "TRAINING"
+        ), f"Cannot stop training: client '{self.name}' is {self._state}, expected TRAINING"
         self._state = "IDLE"
 
     async def _deprovision(self, redis_client: Redis, provisioner: ExlsProvisioner):
@@ -118,21 +129,25 @@ class PilotAvg(Strategy):
         log(INFO, "\t└──> Shard: '%s'", self.shard_manager)
 
     def configure_train(
-        self, server_round: int, arrays: ArrayRecord, base_config: ConfigRecord, grid: Grid
+        self,
+        server_round: int,
+        arrays: ArrayRecord,
+        base_config: ConfigRecord,
+        grid: Grid,
     ) -> Iterable[Message]:
         """Configure the next round of federated training."""
         while len(flwr_node_ids := list(grid.get_node_ids())) < 1:
             log(INFO, "Waiting for a client to connect")
             time.sleep(1)
-        
+
         # --- Server-side Scheduling ---
         # Work on a copy to preserve baseline LRs in base_config
         round_config = dict(base_config)
-        
+
         total_batch_size = int(round_config["total_batch_size"])
         self.total_batch_size = total_batch_size
         current_step = self.global_tokens_processed // total_batch_size
-        
+
         # Scheduler helpers
         num_iterations = int(round_config["num_iterations"])
         warmup_ratio = float(round_config["warmup_ratio"])
@@ -156,39 +171,65 @@ class PilotAvg(Strategy):
 
         lrm = get_lr_multiplier(current_step)
         momentum = get_muon_momentum(current_step)
-        
+
         # Apply schedule
         # Batch size scaling for learning rates (hyperparameters were tuned at reference batch size 2^19)
         batch_lr_scale = 1.0
         reference_batch_size = 2**19
         batch_ratio = total_batch_size / reference_batch_size
         if batch_ratio != 1.0:
-            batch_lr_scale = batch_ratio ** 0.5
-            log(INFO, f"Scaling LRs by {batch_lr_scale:.4f} for batch size {total_batch_size:,}")
+            batch_lr_scale = batch_ratio**0.5
+            log(
+                INFO,
+                f"Scaling LRs by {batch_lr_scale:.4f} for batch size {total_batch_size:,}",
+            )
 
         # Weight decay is tuned at d12 and its scaling seems to be \propto 1/channels^2 (or equivalently, \propto 1/depth^2 due to constant aspect ratio)
         weight_decay = float(round_config.get("weight_decay", 0.0))
         depth = int(round_config["n_layer"])
-        weight_decay_scaled = weight_decay * (12 / depth)**2
+        weight_decay_scaled = weight_decay * (12 / depth) ** 2
         if depth != 12:
-            log(INFO, f"Scaling weight decay from {weight_decay:.6f} to {weight_decay_scaled:.6f} for depth {depth}")
+            log(
+                INFO,
+                f"Scaling weight decay from {weight_decay:.6f} to {weight_decay_scaled:.6f} for depth {depth}",
+            )
 
-        round_config["matrix_lr"] = float(round_config["matrix_lr"]) * lrm * batch_lr_scale
-        round_config["embedding_lr"] = float(round_config["embedding_lr"]) * lrm * batch_lr_scale
-        round_config["unembedding_lr"] = float(round_config["unembedding_lr"]) * lrm * batch_lr_scale
-        round_config["scalar_lr"] = float(round_config.get("scalar_lr", 0.5)) * lrm * batch_lr_scale
+        round_config["matrix_lr"] = (
+            float(round_config["matrix_lr"]) * lrm * batch_lr_scale
+        )
+        round_config["embedding_lr"] = (
+            float(round_config["embedding_lr"]) * lrm * batch_lr_scale
+        )
+        round_config["unembedding_lr"] = (
+            float(round_config["unembedding_lr"]) * lrm * batch_lr_scale
+        )
+        round_config["scalar_lr"] = (
+            float(round_config.get("scalar_lr", 0.5)) * lrm * batch_lr_scale
+        )
         round_config["muon_momentum"] = momentum
         round_config["weight_decay"] = weight_decay_scaled
-        
-        log(INFO, f"Round {server_round} schedule: Step {current_step}, LRM {lrm:.4f}, Momentum {momentum:.4f}")
+
+        log(
+            INFO,
+            f"Round {server_round} schedule: Step {current_step}, LRM {lrm:.4f}, Momentum {momentum:.4f}",
+        )
         # ------------------------------
 
         #################################################
-        log(INFO, f"Querying all {len(flwr_node_ids)} connected Flower nodes for their names...")
+        log(
+            INFO,
+            f"Querying all {len(flwr_node_ids)} connected Flower nodes for their names...",
+        )
         messages = []
         for flwr_node_id in flwr_node_ids:
             content = RecordDict({"config": ConfigRecord({})})
-            messages.append(Message(content=content, message_type=MessageType.QUERY, dst_node_id=flwr_node_id))
+            messages.append(
+                Message(
+                    content=content,
+                    message_type=MessageType.QUERY,
+                    dst_node_id=flwr_node_id,
+                )
+            )
         query_replies = grid.send_and_receive(messages=messages, timeout=10)
         for reply in query_replies:
             client_name: str = reply.content["config"]["name"]
@@ -197,13 +238,22 @@ class PilotAvg(Strategy):
             self.clients[client_name]._flwr_node_id = reply.metadata.src_node_id
         #################################################
 
-
-        log(INFO, "configure_train: Training on all %s Flower nodes", len(flwr_node_ids))
+        log(
+            INFO, "configure_train: Training on all %s Flower nodes", len(flwr_node_ids)
+        )
 
         # Get worker assignments from shard manager
         assignments = self.shard_manager.assign_workers(flwr_node_ids)
         progress = self.shard_manager.get_progress_summary()
         log(INFO, f"Shard progress: {progress['progress']:.1%} ({progress['num_complete']}/{progress['num_total']} complete)")
+
+        # Set clients to TRAINING state
+        node_id_to_client: dict[FlwrNodeId, Client] = {
+            client.flwr_node_id: client for client in self.clients.values() if client.flwr_node_id is not None
+        }
+        for flwr_node_id in flwr_node_ids:
+            if flwr_node_id in node_id_to_client:
+                node_id_to_client[flwr_node_id].start_training()
 
         round_config["server_round"] = server_round
         round_config["dataset_name"] = self.dataset_name
@@ -220,12 +270,16 @@ class PilotAvg(Strategy):
 
         messages = []
         for flwr_node_id in flwr_node_ids:
-            config = ConfigRecord({
-                **round_config,
-                **assignments[flwr_node_id],
-            })
+            config = ConfigRecord(
+                {
+                    **round_config,
+                    **assignments[flwr_node_id],
+                }
+            )
             record = RecordDict({"arrays": arrays, "config": config})
-            message = Message(content=record, message_type=MessageType.TRAIN, dst_node_id=flwr_node_id)
+            message = Message(
+                content=record, message_type=MessageType.TRAIN, dst_node_id=flwr_node_id
+            )
             messages.append(message)
 
         return messages
@@ -238,18 +292,24 @@ class PilotAvg(Strategy):
         """Aggregate ArrayRecords and MetricRecords in the received Messages."""
         valid_replies, _ = self._check_and_log_replies(replies)
 
+        node_id_to_client: dict[FlwrNodeId, Client] = {
+            client.flwr_node_id: client for client in self.clients.values() if client.flwr_node_id is not None
+        }
+
         arrays, metrics = None, None
         if valid_replies:
             for reply in valid_replies:
+                # Update client state
+                if reply.metadata.src_node_id in node_id_to_client:
+                    node_id_to_client[reply.metadata.src_node_id].stop_training()
+
                 # Update shard states from worker results
                 metrics: MetricRecord = reply.content["metrics"]
                 self.shard_manager.update(metrics["shard_ids"], metrics["shard_rows"])
 
                 # Accumulate global tokens
                 if "num_tokens_processed" in metrics:
-                    self.global_tokens_processed += int(
-                        metrics["num_tokens_processed"]
-                    )
+                    self.global_tokens_processed += int(metrics["num_tokens_processed"])
 
             progress = self.shard_manager.get_progress_summary()
             log(
@@ -280,32 +340,48 @@ class PilotAvg(Strategy):
                 if "train_ppl" in metrics:
                     log_dict["server/train_ppl"] = metrics.get("train_ppl", 0)
                 if "actual_train_time" in metrics:
-                    log_dict["server/actual_train_time"] = metrics.get("actual_train_time", 0)
+                    log_dict["server/actual_train_time"] = metrics.get(
+                        "actual_train_time", 0
+                    )
 
             # Log individual client metrics
             for reply in valid_replies:
                 client_metrics: MetricRecord = reply.content["metrics"]
                 client_prefix = f"client_{client_metrics['client_id']}"
                 # Always present
-                log_dict[f"{client_prefix}/batches_processed"] = client_metrics["batches_processed"]
+                log_dict[f"{client_prefix}/batches_processed"] = client_metrics[
+                    "batches_processed"
+                ]
                 # Optional metrics, add if available
                 if "train_loss" in client_metrics:
-                    log_dict[f"{client_prefix}/train_loss"] = client_metrics["train_loss"]
+                    log_dict[f"{client_prefix}/train_loss"] = client_metrics[
+                        "train_loss"
+                    ]
                 if "train_ppl" in client_metrics:
                     log_dict[f"{client_prefix}/train_ppl"] = client_metrics["train_ppl"]
                 if "actual_train_time" in client_metrics:
-                    log_dict[f"{client_prefix}/actual_train_time"] = client_metrics["actual_train_time"]
+                    log_dict[f"{client_prefix}/actual_train_time"] = client_metrics[
+                        "actual_train_time"
+                    ]
 
             # Use global step for summary
-            summary_step = self.global_tokens_processed // self.total_batch_size if hasattr(self, "total_batch_size") else server_round
+            summary_step = (
+                self.global_tokens_processed // self.total_batch_size
+                if hasattr(self, "total_batch_size")
+                else server_round
+            )
             wandb.log(log_dict, step=summary_step)
 
         return arrays, metrics
 
-    def configure_evaluate(self, server_round, arrays, base_config, grid) -> Iterable[Message]:
+    def configure_evaluate(
+        self, server_round, arrays, base_config, grid
+    ) -> Iterable[Message]:
         return []  # not used, server-side eval only
 
-    def aggregate_evaluate(self, server_round, replies) -> tuple[Optional[ArrayRecord], Optional[MetricRecord]]:
+    def aggregate_evaluate(
+        self, server_round, replies
+    ) -> tuple[Optional[ArrayRecord], Optional[MetricRecord]]:
         return None, None  # not used, server-side eval only
 
     async def start(
@@ -339,7 +415,7 @@ class PilotAvg(Strategy):
                 )
             )
 
-        log_polling_task = asyncio.create_task(self._poll_logs(grid))
+        log_polling_task = asyncio.create_task(_poll_logs(self.redis_url, self.clients))
 
         start = time.time()
         arrays = initial_arrays
@@ -351,9 +427,7 @@ class PilotAvg(Strategy):
                 log(INFO, "All data shards processed. Terminating training.")
                 break
 
-            messages = self.configure_train(
-                current_round, arrays, train_config, grid
-            )
+            messages = self.configure_train(current_round, arrays, train_config, grid)
             round_controller = asyncio.create_task(
                 _round_controller(
                     grid, self.redis_client, self.round_min_duration, current_round
@@ -365,6 +439,7 @@ class PilotAvg(Strategy):
             arrays, agg_train_metrics = self.aggregate_train(
                 current_round, train_replies
             )
+
             if agg_train_metrics is not None:
                 log(INFO, "\t└──> Aggregated MetricRecord: %s", agg_train_metrics)
 
@@ -376,41 +451,9 @@ class PilotAvg(Strategy):
         log(INFO, "\nSaving final model to disk...")
         torch.save(arrays.to_torch_state_dict(), "final_model.pt")
 
-    async def _poll_logs(self, grid: Grid):
-        while True:
-            await asyncio.sleep(30)  # Poll every 30 seconds
-            training_clients = [
-                client
-                for client in self.clients.values()
-                if client._state == "TRAINING" and client.flwr_node_id is not None
-            ]
-            if not training_clients:
-                continue
-
-            log(INFO, "Polling clients for logs...")
-            messages = []
-            for client in training_clients:
-                content = RecordDict(
-                    {"config": ConfigRecord({"type": "get_logs"})}
-                )
-                messages.append(
-                    Message(
-                        content=content,
-                        message_type=MessageType.QUERY,
-                        dst_node_id=client.flwr_node_id,
-                    )
-                )
-
-            query_replies = grid.send_and_receive(messages=messages, timeout=10)
-
-            for reply in query_replies:
-                if "logs" in reply.content:
-                    logs = json.loads(reply.content["logs"])
-                    for log_entry in logs:
-                        wandb.log(log_entry, step=log_entry["step"])
-
-
-    def _check_and_log_replies(self, replies: Iterable[Message]) -> tuple[list[Message], list[Message]]:
+    def _check_and_log_replies(
+        self, replies: Iterable[Message]
+    ) -> tuple[list[Message], list[Message]]:
         """Copied from FedAvg"""
         if not replies:
             return [], []
@@ -424,11 +467,21 @@ class PilotAvg(Strategy):
             else:
                 valid_replies.append(msg)
 
-        log(INFO, "aggregate_train: Received %s results and %s failures", len(valid_replies), len(error_replies))
+        log(
+            INFO,
+            "aggregate_train: Received %s results and %s failures",
+            len(valid_replies),
+            len(error_replies),
+        )
 
         # Log errors
         for msg in error_replies:
-            log(INFO, "\t> Received error in reply from node %d: %s", msg.metadata.src_node_id, msg.error.reason)
+            log(
+                INFO,
+                "\t> Received error in reply from node %d: %s",
+                msg.metadata.src_node_id,
+                msg.error.reason,
+            )
 
         # Ensure expected ArrayRecords and MetricRecords are received
         if valid_replies:
@@ -439,6 +492,39 @@ class PilotAvg(Strategy):
             )
 
         return valid_replies, error_replies
+
+
+async def _poll_logs(redis_url: str, clients: dict[str, Client]):
+    """Poll client logs from Redis and log them to wandb."""
+    log(INFO, "Starting Redis log polling task...")
+    redis_client = redis.asyncio.from_url(redis_url, decode_responses=True)
+    while True:
+        try:
+            for client_name in clients.keys():
+                log_key = f"logs:{client_name}"
+                
+                # Fetch all logs in a single transaction
+                pipe = redis_client.pipeline()
+                pipe.lrange(log_key, 0, -1)
+                pipe.ltrim(log_key, 1, 0) # Atomically trim the list
+                log_entries_str, _ = await pipe.execute()
+
+                if log_entries_str:
+                    log(INFO, f"Fetched {len(log_entries_str)} log entries for {client_name} from Redis.")
+                    for log_entry_str in log_entries_str:
+                        try:
+                            log_entry = json.loads(log_entry_str)
+                            wandb.log(log_entry, step=log_entry["step"])
+                        except json.JSONDecodeError:
+                            log(INFO, f"Could not decode log entry: {log_entry_str}")
+            
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            log(INFO, "Log polling task cancelled.")
+            break
+        except Exception as e:
+            log(INFO, f"Error in log polling task: {e}")
+            await asyncio.sleep(30) # Wait longer before retrying
 
 
 async def _provisioning_task(
@@ -455,15 +541,25 @@ async def _provisioning_task(
         await asyncio.sleep(5)
 
 
-async def _round_controller(grid: Grid, redis_client: Redis, round_min_duration: float, current_round: int):
+async def _round_controller(
+    grid: Grid, redis_client: Redis, round_min_duration: float, current_round: int
+):
     log(INFO, f"Round monitor started for ROUND {current_round}")
     start = time.time()
     await asyncio.sleep(round_min_duration)
     while active_flwr_nodes := len(list(grid.get_node_ids())) <= 1:
-        log(INFO, f"Round active since {int(time.time() - start)}s, waiting for more clients to join...")
+        log(
+            INFO,
+            f"Round active since {int(time.time() - start)}s, waiting for more clients to join...",
+        )
         await asyncio.sleep(10)
-    await redis_client.publish(f"round:{current_round}:stop", f"END ROUND {current_round}")
-    log(INFO, f"Signaled ROUND END after {int(time.time() - start)}s with {active_flwr_nodes} connected Flower clients.")
+    await redis_client.publish(
+        f"round:{current_round}:stop", f"END ROUND {current_round}"
+    )
+    log(
+        INFO,
+        f"Signaled ROUND END after {int(time.time() - start)}s with {active_flwr_nodes} connected Flower clients.",
+    )
 
 
 def get_mci(base_url: str, client_name: str) -> float:
