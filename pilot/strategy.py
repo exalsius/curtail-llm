@@ -375,7 +375,8 @@ class PilotAvg(Strategy):
                 if hasattr(self, "total_batch_size")
                 else server_round
             )
-            wandb.log(log_dict, step=summary_step)
+            log_dict["server/global_step"] = summary_step
+            wandb.log(log_dict)
 
         return arrays, metrics
 
@@ -535,8 +536,9 @@ def _poll_logs(
                         log_entry = json.loads(log_entry_str)
                         step = log_entry.pop("step", None)
                         if step is not None:
+                            log_entry["client_step"] = step
                             log(INFO, f"{client_name} log entry at step {step}: {log_entry}")
-                            wandb.log(log_entry, step=step)
+                            wandb.log(log_entry)
 
             time.sleep(10)
         except Exception as e:

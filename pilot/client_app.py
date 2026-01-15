@@ -219,6 +219,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
 
                 log_entry = {
                     "step": current_step,
+                    "timestamp": current_time,
                     f"client_{client_id}/train_loss": loss_scalar,
                     f"client_{client_id}/train_ppl": math.exp(loss_scalar),
                     f"client_{client_id}/matrix_lr": matrix_lr,
