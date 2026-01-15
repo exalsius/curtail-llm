@@ -43,10 +43,18 @@ def run_training_process(rank, world_size, msg, context, result_dict):
 
     if config.get("debug_port_client") and client_id == 0 and rank == 0:
         import pydevd_pycharm
-        pydevd_pycharm.settrace('localhost', port=config["debug_port_client"], stdout_to_server=True, stderr_to_server=True)
+
+        pydevd_pycharm.settrace(
+            "localhost",
+            port=config["debug_port_client"],
+            stdout_to_server=True,
+            stderr_to_server=True,
+        )
 
     if "cumulative_batches" in context.state:
-        cumulative_batches = int(context.state["cumulative_batches"]["cumulative_batches"])
+        cumulative_batches = int(
+            context.state["cumulative_batches"]["cumulative_batches"]
+        )
     else:
         cumulative_batches = 0
 
@@ -81,7 +89,10 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     global_tokens_processed_start = int(config.get("global_tokens_processed_start", 0))
 
     if rank == 0:
-        log(INFO, f"Client {client_id}: {len(shard_assignments)} shards: {shard_assignments}")
+        log(
+            INFO,
+            f"Client {client_id}: {len(shard_assignments)} shards: {shard_assignments}",
+        )
 
     # Load model
     model = get_model(config, max_seq_len)
@@ -116,7 +127,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
 
     # Training loop
     model.train()
-    
+
     # Initialize optimizers (Muon + AdamW)
     raw_model = getattr(model, "module", model)
     optimizers = raw_model.setup_optimizers(
@@ -127,7 +138,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
         scalar_lr=scalar_lr,
     )
     adamw_optimizer, muon_optimizer = optimizers
-    
+
     # Set Muon momentum (scheduled by server)
     for group in muon_optimizer.param_groups:
         group["momentum"] = muon_momentum
@@ -137,6 +148,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
         autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
     else:
         from contextlib import nullcontext
+
         autocast_ctx = nullcontext()
 
     total_loss = 0.0
@@ -184,10 +196,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
 
                 # Calculate global step for logging
                 tokens_processed_locally = (
-                    batches_processed
-                    * device_batch_size
-                    * max_seq_len
-                    * world_size
+                    batches_processed * device_batch_size * max_seq_len * world_size
                 )
                 total_global_tokens = (
                     global_tokens_processed_start + tokens_processed_locally
@@ -218,7 +227,6 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                     f"client_{client_id}/tok_per_sec": tok_per_sec,
                 }
                 redis_client.rpush(log_key, json.dumps(log_entry))
-
 
         total_loss += loss.item() * gradient_accumulation_steps
 
@@ -340,12 +348,7 @@ def query(msg: Message, context: Context):
             content=RecordDict({"config": ConfigRecord({"name": node_name})}),
             reply_to=msg,
         )
-    elif query_type == "get_logs":
-        log(INFO, f"CLIENT {node_name}: Received get_logs query (deprecated)")
-        return Message(
-            content=RecordDict({"logs": json.dumps([])}),
-            reply_to=msg,
-        )
+
     else:
         log(
             INFO,

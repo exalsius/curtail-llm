@@ -245,11 +245,16 @@ class PilotAvg(Strategy):
         # Get worker assignments from shard manager
         assignments = self.shard_manager.assign_workers(flwr_node_ids)
         progress = self.shard_manager.get_progress_summary()
-        log(INFO, f"Shard progress: {progress['progress']:.1%} ({progress['num_complete']}/{progress['num_total']} complete)")
+        log(
+            INFO,
+            f"Shard progress: {progress['progress']:.1%} ({progress['num_complete']}/{progress['num_total']} complete)",
+        )
 
         # Set clients to TRAINING state
         node_id_to_client: dict[FlwrNodeId, Client] = {
-            client.flwr_node_id: client for client in self.clients.values() if client.flwr_node_id is not None
+            client.flwr_node_id: client
+            for client in self.clients.values()
+            if client.flwr_node_id is not None
         }
         for flwr_node_id in flwr_node_ids:
             if flwr_node_id in node_id_to_client:
@@ -263,10 +268,6 @@ class PilotAvg(Strategy):
 
         if self.debug_port_client:
             round_config["debug_port_client"] = self.debug_port_client
-
-        round_config["wandb_project"] = self.wandb_project
-        if self.wandb_entity:
-            round_config["wandb_entity"] = self.wandb_entity
 
         messages = []
         for flwr_node_id in flwr_node_ids:
@@ -293,7 +294,9 @@ class PilotAvg(Strategy):
         valid_replies, _ = self._check_and_log_replies(replies)
 
         node_id_to_client: dict[FlwrNodeId, Client] = {
-            client.flwr_node_id: client for client in self.clients.values() if client.flwr_node_id is not None
+            client.flwr_node_id: client
+            for client in self.clients.values()
+            if client.flwr_node_id is not None
         }
 
         arrays, metrics = None, None
@@ -502,29 +505,32 @@ async def _poll_logs(redis_url: str, clients: dict[str, Client]):
         try:
             for client_name in clients.keys():
                 log_key = f"logs:{client_name}"
-                
+
                 # Fetch all logs in a single transaction
                 pipe = redis_client.pipeline()
                 pipe.lrange(log_key, 0, -1)
-                pipe.ltrim(log_key, 1, 0) # Atomically trim the list
+                pipe.ltrim(log_key, 1, 0)  # Atomically trim the list
                 log_entries_str, _ = await pipe.execute()
 
                 if log_entries_str:
-                    log(INFO, f"Fetched {len(log_entries_str)} log entries for {client_name} from Redis.")
+                    log(
+                        INFO,
+                        f"Fetched {len(log_entries_str)} log entries for {client_name} from Redis.",
+                    )
                     for log_entry_str in log_entries_str:
                         try:
                             log_entry = json.loads(log_entry_str)
                             wandb.log(log_entry, step=log_entry["step"])
                         except json.JSONDecodeError:
                             log(INFO, f"Could not decode log entry: {log_entry_str}")
-            
+
             await asyncio.sleep(10)
         except asyncio.CancelledError:
             log(INFO, "Log polling task cancelled.")
             break
         except Exception as e:
             log(INFO, f"Error in log polling task: {e}")
-            await asyncio.sleep(30) # Wait longer before retrying
+            await asyncio.sleep(30)  # Wait longer before retrying
 
 
 async def _provisioning_task(
