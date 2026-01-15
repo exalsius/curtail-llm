@@ -122,7 +122,6 @@ class PilotAvg(Strategy):
 
         self.redis_client = redis.from_url(redis_url)
         self.shard_manager = ShardManager(num_shards=num_shards)
-        self.log_queue = queue.Queue()
         self.weighted_by_key = "batches_processed"
         self.global_tokens_processed = 0
 
@@ -370,11 +369,6 @@ class PilotAvg(Strategy):
                         "actual_train_time"
                     ]
 
-            # Drain the log queue and add to the log_dict
-            while not self.log_queue.empty():
-                log_entry = self.log_queue.get()
-                log_dict.update(log_entry)
-
             # Use global step for summary
             summary_step = (
                 self.global_tokens_processed // self.total_batch_size
@@ -430,7 +424,7 @@ class PilotAvg(Strategy):
 
         polling_thread = threading.Thread(
             target=_poll_logs,
-            args=(self.redis_url, self.clients, self.log_queue),
+            args=(self.redis_url, self.clients),
             daemon=True,
         )
         polling_thread.start()
@@ -521,7 +515,6 @@ class PilotAvg(Strategy):
 def _poll_logs(
     redis_url: str,
     clients: dict[str, Client],
-    log_queue: queue.Queue,
 ):
     """Poll client logs from Redis and push them to a queue."""
     log(INFO, "Starting Redis log polling task...")
@@ -537,18 +530,13 @@ def _poll_logs(
                 log_entries_str = pipe.execute()[0]
 
                 if log_entries_str:
-                    log(
-                        INFO,
-                        f"Fetched {len(log_entries_str)} log entries for {client_name} from Redis.",
-                    )
+                    log(INFO, f"Fetched {len(log_entries_str)} log entries for {client_name} from Redis.")
                     for log_entry_str in log_entries_str:
-                        try:
-                            log_entry = json.loads(log_entry_str)
-                            # The step value is removed from the client-side logs
-                            log_entry.pop("step", None)
-                            log_queue.put(log_entry)
-                        except json.JSONDecodeError:
-                            log(INFO, f"Could not decode log entry: {log_entry_str}")
+                        log_entry = json.loads(log_entry_str)
+                        step = log_entry.pop("step", None)
+                        if step is not None:
+                            log(INFO, f"{client_name} log entry at step {step}: {log_entry}")
+                            wandb.log(log_entry, step=step)
 
             time.sleep(10)
         except Exception as e:
