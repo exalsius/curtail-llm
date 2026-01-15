@@ -95,7 +95,6 @@ class PilotAvg(Strategy):
         forecast_api_url: str,
         wandb_project: Optional[str] = None,
         wandb_entity: Optional[str] = None,
-        wandb_run_group: Optional[str] = None,
     ) -> None:
         self.clients: dict[str, Client] = clients
         self.dataset_name = dataset_name
@@ -107,7 +106,6 @@ class PilotAvg(Strategy):
         self.forecast_api_url = forecast_api_url
         self.wandb_project = wandb_project
         self.wandb_entity = wandb_entity
-        self.wandb_run_group = wandb_run_group
 
         self.redis_client = redis.from_url(redis_url)
         self.shard_manager = ShardManager(num_shards=num_shards)
@@ -216,9 +214,7 @@ class PilotAvg(Strategy):
         if self.debug_port_client:
             round_config["debug_port_client"] = self.debug_port_client
 
-        # Pass W&B configuration to clients
         round_config["wandb_project"] = self.wandb_project
-        round_config["wandb_group"] = self.wandb_run_group
         if self.wandb_entity:
             round_config["wandb_entity"] = self.wandb_entity
 

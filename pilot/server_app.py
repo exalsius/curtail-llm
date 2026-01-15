@@ -41,7 +41,6 @@ def main(grid: Grid, context: Context) -> None:
         project=wandb_project,
         entity=wandb_entity,
         name=run_name,
-        group=run_name,  # Group all runs together
         config={
             "matrix_lr": context.run_config["matrix_lr"],
             "embedding_lr": context.run_config["embedding_lr"],
@@ -72,7 +71,6 @@ def main(grid: Grid, context: Context) -> None:
         forecast_api_url=context.run_config["forecast_api_url"],
         wandb_project=wandb_project,
         wandb_entity=wandb_entity,
-        wandb_run_group=run_name,
     )
 
     # Extract scheduler config
