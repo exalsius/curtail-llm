@@ -50,6 +50,11 @@ def main(grid: Grid, context: Context) -> None:
     )
     log(INFO, "Wandb initialized with run_id: %s", wandb.run.id)
 
+    redis_url: str = context.run_config["redis_url"]
+    redis_client = redis.from_url(redis_url)
+    redis_client.flushdb()
+    log(INFO, "Redis DB flushed.")
+
     # Create clients and provisioner from config
     clients, node_id_mapping = _clients_from_run_config(context.run_config)
     log(INFO, "Configured clients: %s", list(clients.keys()))
