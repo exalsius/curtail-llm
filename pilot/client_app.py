@@ -291,7 +291,6 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                     "metrics": MetricRecord(
                         {
                             "client_id": client_id,
-                            "node_name": node_name,
                             "train_loss": avg_loss,
                             "batches_processed": batches_processed,
                             "num_tokens_processed": tokens_processed_round,
@@ -338,24 +337,11 @@ def train(msg: Message, context: Context):
 
 @app.query()
 def query(msg: Message, context: Context):
-    query_type = msg.content["config"].get("type", "health")
     node_name = context.node_config.get(
         "name", f"client_{context.node_config.get('partition-id', 0)}"
     )
-
-    if query_type == "health":
-        log(INFO, f"HI! I'm CLIENT {node_name}")
-        return Message(
-            content=RecordDict({"config": ConfigRecord({"name": node_name})}),
-            reply_to=msg,
-        )
-
-    else:
-        log(
-            INFO,
-            f"CLIENT {node_name}: Received unknown query type '{query_type}'",
-        )
-        return Message(
-            content=RecordDict({}),
-            reply_to=msg,
-        )
+    log(INFO, f"HI! I'm CLIENT {node_name}")
+    return Message(
+        content=RecordDict({"config": ConfigRecord({"name": node_name})}),
+        reply_to=msg,
+    )

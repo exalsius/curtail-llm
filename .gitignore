@@ -26,3 +26,6 @@ multirun/
 *.pids
 *_wandb_logs/
 dump.rdb
+
+# Rust BPE model files
+rustbpe/target/
