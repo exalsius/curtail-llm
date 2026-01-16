@@ -87,8 +87,9 @@ clients = {client_0 = {exls_node_id = "uuid-1", provision_threshold = 100, depro
 dataset_name = "karpathy/fineweb-edu-100b-shuffle"
 num_shards = 240  # Number of parquet files to use (each ~53k rows)
 matrix_lr = 0.02
-embedding_lr = 0.2
+embedding_lr = 0.3
 unembedding_lr = 0.004
+scalar_lr = 0.5
 device_batch_size = 8
 max_seq_len = 2048
 total_batch_size = 524288  # Matches nanochat d20 default (524k tokens)
@@ -96,11 +97,14 @@ total_batch_size = 524288  # Matches nanochat d20 default (524k tokens)
 # Scheduling
 num_iterations = 2000
 weight_decay = 0.2
-grad_clip = 1.0
+grad_clip = 0.0
 warmup_ratio = 0.0
 warmdown_ratio = 0.2
 final_lr_frac = 0.0
 use_muon = true
+
+adam_beta1 = 0.8
+adam_beta2 = 0.95
 
 # Model architecture (nanochat d20 defaults):
 vocab_size = 65536

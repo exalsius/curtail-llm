@@ -68,7 +68,8 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     unembedding_lr = float(config["unembedding_lr"])
     scalar_lr = float(config["scalar_lr"])
     weight_decay = float(config["weight_decay"])
-    grad_clip = float(config["grad_clip"])
+    adam_beta1 = float(config["adam_beta1"])
+    adam_beta2 = float(config["adam_beta2"])
 
     # Calculate gradient accumulation steps
     # Note: total_batch_size is global, so we divide by (device_batch_size * world_size)
@@ -144,6 +145,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
         embedding_lr=embedding_lr,
         matrix_lr=matrix_lr,
         weight_decay=weight_decay,
+        adam_betas=(adam_beta1, adam_beta2),
         scalar_lr=scalar_lr,
     )
     adamw_optimizer, muon_optimizer = optimizers
