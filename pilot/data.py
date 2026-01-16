@@ -78,7 +78,11 @@ class ShardManager:
             shard_rows: List of absolute row positions for each shard
         """
         for shard_id, new_row in zip(shard_ids, shard_rows):
-            self.shard_states[shard_id]["processed_rows"] = new_row
+            # The client reports the 0-indexed row it has processed. To get the
+            # number of rows processed so far, we use `new_row + 1`.
+            num_processed = new_row + 1
+            if num_processed > self.shard_states[shard_id].get("processed_rows", 0):
+                self.shard_states[shard_id]["processed_rows"] = num_processed
 
     def is_complete(self) -> bool:
         """Check if all shards are complete."""
