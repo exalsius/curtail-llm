@@ -59,7 +59,7 @@ class ShardManager:
             return {flwr_node_id: {"shard_ids": [], "shard_starts": []} for flwr_node_id in flwr_node_ids}
 
         # Sort by processed_rows ascending (in-progress first)
-        incomplete_shards.sort(key=lambda x: x[1])
+        incomplete_shards.sort(key=lambda x: x[1], reverse=True)
 
         # Distribute shards evenly among workers (round-robin) in gRPC format
         assignments = {flwr_node_id: {"shard_ids": [], "shard_starts": []} for flwr_node_id in flwr_node_ids}
