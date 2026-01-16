@@ -537,7 +537,7 @@ def _poll_logs(
                         step = log_entry.pop("step", None)
                         if step is not None:
                             log_entry["client_step"] = step
-                            log(INFO, f"{client_name} log entry at step {step}: {log_entry}")
+                            # log(INFO, f"{client_name} log entry at step {step}: {log_entry}")
                             wandb.log(log_entry)
 
             time.sleep(10)

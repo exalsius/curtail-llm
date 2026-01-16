@@ -67,7 +67,7 @@ clientapp = "pilot.client_app:app"
 
 [tool.flwr.app.config]
 redis_url = "redis://localhost:6379"
-round_min_duration = 60
+round_min_duration = 300
 
 
 wandb_project = "pilot_flwr"
