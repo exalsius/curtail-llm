@@ -81,18 +81,22 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     redis_url = context.run_config["redis_url"]
     shard_ids = config.get("shard_ids", [])
     shard_starts = config.get("shard_starts", [])
-    shard_assignments = list(zip(shard_ids, shard_starts))
+    
+    # Create a single list of assignments for the whole client
+    all_shard_assignments = list(zip(shard_ids, shard_starts))
+    
+    # Give each rank its own slice of the assignments
+    shard_assignments = all_shard_assignments[rank::world_size]
 
     # Scheduler Config
     # LRs and momentum are now scheduled by the server per round
     muon_momentum = float(config.get("muon_momentum", 0.95))
     global_tokens_processed_start = int(config.get("global_tokens_processed_start", 0))
 
-    if rank == 0:
-        log(
-            INFO,
-            f"Client {client_id}: {len(shard_assignments)} shards: {shard_assignments}",
-        )
+    log(
+        INFO,
+        f"Rank {rank}/{world_size} assigned {len(shard_assignments)} shards: {shard_assignments}",
+    )
 
     # Load model
     model = get_model(config, max_seq_len)
@@ -267,7 +271,27 @@ def run_training_process(rank, world_size, msg, context, result_dict):
 
     avg_loss = total_loss / batches_processed if batches_processed > 0 else 0.0
 
+    # Gather shard progress from all ranks if DDP is used
     if world_size > 1:
+        # Convert local shard_progress dict to list of tuples for gathering
+        local_progress_list = [(s_id, c_row) for s_id, c_row in shard_progress.items()]
+        
+        # Gather all local_progress_lists on rank 0
+        if rank == 0:
+            gathered_progress_lists = [None for _ in range(world_size)]
+            dist.gather_object(local_progress_list, gathered_progress_lists, dst=0)
+        else:
+            dist.gather_object(local_progress_list, dst=0)
+
+        # On rank 0, combine all gathered progress into a single dictionary
+        if rank == 0:
+            global_shard_progress = {}
+            for progress_list in gathered_progress_lists:
+                for shard_id, current_row in progress_list:
+                    global_shard_progress[shard_id] = current_row
+            shard_progress = global_shard_progress # Update the shard_progress dict for rank 0
+
+        # Destroy process group after gathering progress
         dist.destroy_process_group()
 
     if rank == 0:

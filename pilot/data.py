@@ -144,8 +144,8 @@ def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_
         table = pf.read()
         texts = table.column('text').to_pylist()[start_row:]
         
-        # Subsample for this rank
-        my_texts = texts[rank::world_size]
+        # This rank processes all texts in its assigned shard (no further subsampling)
+        my_texts = texts
 
         # Process in batches
         for i in range(0, len(my_texts), tokenizer_batch_size):
@@ -155,15 +155,9 @@ def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_
             for j, tokens in enumerate(token_lists):
                 token_buffer.extend(tokens)
                 
-                # Calculate global current_row
-                # local_idx = i + j
-                # global_offset = local_idx * world_size + rank
-                # current_row = start_row + global_offset
-                
-                # Simplified tracking: we need to report a safe resume point.
-                # If we report 'current_row', it means we processed this row.
+                # Calculate global current_row relative to the start of this shard
                 local_idx = i + j
-                current_row = start_row + local_idx * world_size + rank
+                current_row = start_row + local_idx 
 
                 # Yield batches
                 while len(token_buffer) >= needed_tokens:
@@ -174,8 +168,10 @@ def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_
                     targets = scratch[1:].view(B, T).to(device=device, non_blocking=use_cuda)
                     yield inputs, targets, shard_id, current_row, current_row / total_rows
 
-                if current_row >= total_rows:
-                    break
+                # current_row will exceed total_rows if the last batch goes past the end
+                # The condition check should be on the original shard's total_rows, not current_row
+                # The loop for (i,j) will naturally stop when my_texts is exhausted.
+                # The "if current_row >= total_rows" check here is redundant/misleading now.
 
         # Clear buffer between shards
         if token_buffer:
