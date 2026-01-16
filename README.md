@@ -115,9 +115,7 @@ You can override config values from command line:
 flwr run . local-deployment --run-config "lr=0.0005" --stream
 ```
 
-### Vanilla nanochat Training
-
-Baseline:
+### Vanilla nanochat Baseline
 
 ```bash
 tmux new -A -s baseline
@@ -157,3 +155,14 @@ curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
 nvm install 24
 npm install -g @google/gemini-cli
 ```
+
+
+
+# TODOs
+
+- Hyperparameter tuning for FL lr
+- Test dynamic joining / leaving
+- Baseline vs single client
+
+
+do log the gradient norm! Do you think gradient clipping makes sense here?

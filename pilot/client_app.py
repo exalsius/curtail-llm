@@ -280,6 +280,14 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                 )
                 tok_per_sec = tokens_processed_since_log / dt
 
+                # Extract effective LRs from optimizers for logging
+                # AdamW groups: 0=unembed, 1=embed, 2=resid_scalar, 3=x0_scalar
+                eff_unembedding_lr = adamw_optimizer.param_groups[0]['lr']
+                eff_embedding_lr = adamw_optimizer.param_groups[1]['lr']
+                # The two scalar groups have different base LRs, but we'll log the x0_scalar one for simplicity
+                eff_scalar_lr = adamw_optimizer.param_groups[3]['lr']
+                eff_matrix_lr = muon_optimizer.param_groups[0]['lr']
+
                 loss_scalar = loss.item() * gradient_accumulation_steps
 
                 log_entry = {
@@ -287,8 +295,13 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                     "timestamp": current_time,
                     f"client_{client_id}/train_loss": loss_scalar,
                     f"client_{client_id}/train_ppl": math.exp(loss_scalar),
-                    f"client_{client_id}/matrix_lr": matrix_lr,
+                    f"client_{client_id}/lr_multiplier": lrm,
+                    f"client_{client_id}/eff_matrix_lr": eff_matrix_lr,
+                    f"client_{client_id}/eff_embedding_lr": eff_embedding_lr,
+                    f"client_{client_id}/eff_unembedding_lr": eff_unembedding_lr,
+                    f"client_{client_id}/eff_scalar_lr": eff_scalar_lr,
                     f"client_{client_id}/momentum": muon_momentum,
+                    f"client_{client_id}/weight_decay": muon_weight_decay,
                     f"client_{client_id}/tok_per_sec": tok_per_sec,
                 }
                 redis_client.rpush(log_key, json.dumps(log_entry))
