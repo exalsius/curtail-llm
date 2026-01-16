@@ -109,6 +109,9 @@ adam_beta2 = 0.95
 # Model architecture (nanochat d20 defaults):
 vocab_size = 65536
 n_layer = 20
+n_embd = 1280
+n_head = 10
+n_kv_head = 10
 aspect_ratio = 64
 head_dim = 128
 

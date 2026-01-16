@@ -147,70 +147,14 @@ class PilotAvg(Strategy):
         self.total_batch_size = total_batch_size
         current_step = self.global_tokens_processed // total_batch_size
 
-        # Scheduler helpers
-        num_iterations = int(round_config["num_iterations"])
-        warmup_ratio = float(round_config["warmup_ratio"])
-        warmdown_ratio = float(round_config["warmdown_ratio"])
-        final_lr_frac = float(round_config["final_lr_frac"])
-
-        def get_lr_multiplier(step):
-            warmup_iters = round(warmup_ratio * num_iterations)
-            warmdown_iters = round(warmdown_ratio * num_iterations)
-            if step < warmup_iters:
-                return (step + 1) / warmup_iters
-            elif step <= num_iterations - warmdown_iters:
-                return 1.0
-            else:
-                progress = (num_iterations - step) / warmdown_iters
-                return progress * 1.0 + (1 - progress) * final_lr_frac
-
-        def get_muon_momentum(step):
-            frac = min(step / 300, 1)
-            return (1 - frac) * 0.85 + frac * 0.95
-
-        lrm = get_lr_multiplier(current_step)
-        momentum = get_muon_momentum(current_step)
-
-        # Apply schedule
-        # Batch size scaling for learning rates (hyperparameters were tuned at reference batch size 2^19)
-        batch_lr_scale = 1.0
-        reference_batch_size = 2**19
-        batch_ratio = total_batch_size / reference_batch_size
-        if batch_ratio != 1.0:
-            batch_lr_scale = batch_ratio**0.5
-            log(
-                INFO,
-                f"Scaling LRs by {batch_lr_scale:.4f} for batch size {total_batch_size:,}",
-            )
-
-        # Weight decay is tuned at d12 and its scaling seems to be \propto 1/channels^2 (or equivalently, \propto 1/depth^2 due to constant aspect ratio)
-        weight_decay = float(round_config.get("weight_decay", 0.0))
-        depth = int(round_config["n_layer"])
-        weight_decay_scaled = weight_decay * (12 / depth) ** 2
-        if depth != 12:
-            log(
-                INFO,
-                f"Scaling weight decay from {weight_decay:.6f} to {weight_decay_scaled:.6f} for depth {depth}",
-            )
-
-        round_config["matrix_lr"] = (
-            float(round_config["matrix_lr"]) * lrm * batch_lr_scale
-        )
-        round_config["embedding_lr"] = (
-            float(round_config["embedding_lr"]) * lrm * batch_lr_scale
-        )
-        round_config["unembedding_lr"] = (
-            float(round_config["unembedding_lr"]) * lrm * batch_lr_scale
-        )
-        round_config["scalar_lr"] = (
-            float(round_config.get("scalar_lr", 0.5)) * lrm * batch_lr_scale
-        )
-        round_config["muon_momentum"] = momentum
-        round_config["weight_decay"] = weight_decay_scaled
+        # The client will handle per-step scheduling. The server just passes the raw parameters.
+        ESTIMATED_TOTAL_TOKENS = 1_000_000_000
+        num_iterations = ESTIMATED_TOTAL_TOKENS // total_batch_size
+        round_config["num_iterations"] = num_iterations
 
         log(
             INFO,
-            f"Round {server_round} schedule: Step {current_step}, LRM {lrm:.4f}, Momentum {momentum:.4f}",
+            f"Round {server_round}: Step {current_step}, Passing scheduling parameters to clients.",
         )
         # ------------------------------
 

@@ -67,9 +67,53 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     embedding_lr = float(config["embedding_lr"])
     unembedding_lr = float(config["unembedding_lr"])
     scalar_lr = float(config["scalar_lr"])
-    weight_decay = float(config["weight_decay"])
+    weight_decay_base = float(config["weight_decay"])
     adam_beta1 = float(config["adam_beta1"])
     adam_beta2 = float(config["adam_beta2"])
+
+    # --- Scheduler ---
+    num_iterations = int(config["num_iterations"])
+    warmup_ratio = float(config["warmup_ratio"])
+    warmdown_ratio = float(config["warmdown_ratio"])
+    final_lr_frac = float(config["final_lr_frac"])
+
+    def get_lr_multiplier(it):
+        warmup_iters = round(warmup_ratio * num_iterations)
+        warmdown_iters = round(warmdown_ratio * num_iterations)
+        if it < warmup_iters:
+            return (it + 1) / warmup_iters
+        elif it <= num_iterations - warmdown_iters:
+            return 1.0
+        else:
+            progress = (num_iterations - it) / warmdown_iters
+            return progress * 1.0 + (1 - progress) * final_lr_frac
+
+    def get_muon_momentum(it):
+        frac = min(it / 300, 1)
+        return (1 - frac) * 0.85 + frac * 0.95
+
+    # Weight decay is tuned at d12 and its scaling seems to be \propto 1/channels^2
+    depth = int(config["n_layer"])
+    weight_decay_scaled = weight_decay_base * (12 / depth) ** 2
+    if depth != 12:
+        log(
+            INFO,
+            f"Scaling weight decay from {weight_decay_base:.6f} to {weight_decay_scaled:.6f} for depth {depth}",
+        )
+    def get_weight_decay(it):
+        return weight_decay_scaled * (1 - it / num_iterations)
+
+    # Batch size scaling for learning rates
+    batch_lr_scale = 1.0
+    reference_batch_size = 2**19
+    batch_ratio = total_batch_size / reference_batch_size
+    if batch_ratio != 1.0:
+        batch_lr_scale = batch_ratio**0.5
+        log(
+            INFO,
+            f"Scaling LRs by {batch_lr_scale:.4f} for batch size {total_batch_size:,}",
+        )
+    # --- End Scheduler ---
 
     # Calculate gradient accumulation steps
     # Note: total_batch_size is global, so we divide by (device_batch_size * world_size)
@@ -141,18 +185,16 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     # Initialize optimizers (Muon + AdamW)
     raw_model = getattr(model, "module", model)
     optimizers = raw_model.setup_optimizers(
-        unembedding_lr=unembedding_lr,
-        embedding_lr=embedding_lr,
-        matrix_lr=matrix_lr,
-        weight_decay=weight_decay,
+        unembedding_lr=unembedding_lr * batch_lr_scale,
+        embedding_lr=embedding_lr * batch_lr_scale,
+        matrix_lr=matrix_lr * batch_lr_scale,
+        weight_decay=weight_decay_scaled, # Note: this is base decay, per-step is applied later
         adam_betas=(adam_beta1, adam_beta2),
-        scalar_lr=scalar_lr,
+        scalar_lr=scalar_lr * batch_lr_scale,
     )
     adamw_optimizer, muon_optimizer = optimizers
 
-    # Set Muon momentum (scheduled by server)
-    for group in muon_optimizer.param_groups:
-        group["momentum"] = muon_momentum
+    # Per-step scheduling is now handled in the training loop.
 
     # Setup autocast context
     if device.type == "cuda":
@@ -188,13 +230,25 @@ def run_training_process(rank, world_size, msg, context, result_dict):
         batches_processed += 1
 
         if batches_processed % gradient_accumulation_steps == 0:
-            if grad_clip > 0:
-                grad_norm_tensor = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), grad_clip
-                )
-                grad_norm = grad_norm_tensor.item()
-            else:
-                grad_norm = 0.0
+            # Calculate current global step
+            local_steps_done = (batches_processed // gradient_accumulation_steps) - 1
+            start_step = global_tokens_processed_start // total_batch_size
+            current_step = start_step + local_steps_done
+
+            # Get scheduled hyperparameter values for this step
+            lrm = get_lr_multiplier(current_step)
+            muon_momentum = get_muon_momentum(current_step)
+            muon_weight_decay = get_weight_decay(current_step)
+
+            # Update optimizers with scheduled values
+            for opt in optimizers:
+                for group in opt.param_groups:
+                    # The optimizers are initialized with initial_lr by setup_optimizers
+                    group["lr"] = group["initial_lr"] * lrm
+
+            for group in muon_optimizer.param_groups:
+                group["momentum"] = muon_momentum
+                group["weight_decay"] = muon_weight_decay
 
             for opt in optimizers:
                 opt.step()
@@ -235,7 +289,6 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                     f"client_{client_id}/train_ppl": math.exp(loss_scalar),
                     f"client_{client_id}/matrix_lr": matrix_lr,
                     f"client_{client_id}/momentum": muon_momentum,
-                    f"client_{client_id}/grad_norm": grad_norm,
                     f"client_{client_id}/tok_per_sec": tok_per_sec,
                 }
                 redis_client.rpush(log_key, json.dumps(log_entry))
