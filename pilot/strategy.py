@@ -1,9 +1,6 @@
-import asyncio
 import json
-import queue
 import threading
 import time
-from collections import defaultdict
 from dataclasses import dataclass
 from logging import INFO
 from typing import Optional, Literal, Iterable
@@ -249,7 +246,9 @@ class PilotAvg(Strategy):
         progress = self.shard_manager.get_progress_summary()
         log(
             INFO,
-            f"Shard progress: {progress['progress']:.1%} ({progress['num_complete']}/{progress['num_total']} complete)",
+            f"Shard progress: {progress['progress']:.1%} "
+            f"({progress['processed_rows']:,}/{progress['total_rows']:,} rows, "
+            f"{progress['num_complete']}/{progress['num_total']} complete)",
         )
 
         # Set clients to TRAINING state
@@ -464,8 +463,6 @@ class PilotAvg(Strategy):
             if agg_train_metrics is not None:
                 log(INFO, "\t└──> Aggregated MetricRecord: %s", agg_train_metrics)
 
-
-
         log(INFO, f"\nStrategy execution finished in {time.time() - start:.2f}s")
         log(INFO, "\nSaving final model to disk...")
         torch.save(arrays.to_torch_state_dict(), "final_model.pt")
@@ -531,7 +528,10 @@ def _poll_logs(
                 log_entries_str = pipe.execute()[0]
 
                 if log_entries_str:
-                    log(INFO, f"Fetched {len(log_entries_str)} log entries for {client_name} from Redis.")
+                    log(
+                        INFO,
+                        f"Fetched {len(log_entries_str)} log entries for {client_name} from Redis.",
+                    )
                     for log_entry_str in log_entries_str:
                         log_entry = json.loads(log_entry_str)
                         step = log_entry.pop("step", None)
@@ -573,11 +573,17 @@ def _determine_round_end(
 
     # Wait for more than one client to have joined
     while len(list(grid.get_node_ids())) <= 1:
-        log(INFO, f"Round active since {int(time.time() - start_time)}s, waiting for more clients to join...")
+        log(
+            INFO,
+            f"Round active since {int(time.time() - start_time)}s, waiting for more clients to join...",
+        )
         time.sleep(10)
 
     redis_client.publish(f"round:{current_round}:stop", f"END ROUND {current_round}")
-    log(INFO, f"Signaled ROUND END after {int(time.time() - start_time)}s with {len(list(grid.get_node_ids()))} connected Flower clients.")
+    log(
+        INFO,
+        f"Signaled ROUND END after {int(time.time() - start_time)}s with {len(list(grid.get_node_ids()))} connected Flower clients.",
+    )
 
 
 def get_mci(base_url: str, client_name: str) -> float:

@@ -96,7 +96,10 @@ def run_training_process(rank, world_size, msg, context, result_dict):
 
     # Load model
     model = get_model(config, max_seq_len)
-    model.load_state_dict(msg.content["arrays"].to_torch_state_dict(), strict=True)
+    # Clean state dict keys from `_orig_mod.` prefix (added by torch.compile)
+    state_dict = msg.content["arrays"].to_torch_state_dict()
+    state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+    model.load_state_dict(state_dict, strict=True)
     model.to(device)
 
     # Compile model (Linux + CUDA only)
@@ -121,6 +124,8 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     )
 
     # Setup Redis pubsub for stop signal
+    # IMPORTANT: If a stop signal is published before the client successfully subscribes
+    # to these channels, the signal will be missed by this client.
     pubsub = redis.from_url(redis_url).pubsub()
     pubsub.subscribe(f"round:{server_round}:stop")
     pubsub.subscribe(f"{node_name}:stop")
@@ -277,8 +282,13 @@ def run_training_process(rank, world_size, msg, context, result_dict):
         shard_ids = list(shard_progress.keys())
         shard_rows = list(shard_progress.values())
 
-        # Unwrap model if DDP
-        state_dict = getattr(model, "module", model).state_dict()
+        # Unwrap model from DDP and torch.compile wrappers
+        unwrapped_model = model
+        if hasattr(unwrapped_model, "module"):
+            unwrapped_model = unwrapped_model.module
+        if hasattr(unwrapped_model, "_orig_mod"):
+            unwrapped_model = unwrapped_model._orig_mod
+        state_dict = unwrapped_model.state_dict()
 
         tokens_processed_round = (
             batches_processed * device_batch_size * max_seq_len * world_size
