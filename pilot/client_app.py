@@ -237,6 +237,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                     f"client_{client_id}/tok_per_sec": tok_per_sec,
                 }
                 redis_client.rpush(log_key, json.dumps(log_entry))
+                last_log_time = current_time
 
         total_loss += loss.item() * gradient_accumulation_steps
 
