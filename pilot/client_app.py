@@ -13,7 +13,6 @@ from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
 from flwr.common import ConfigRecord, log
 from torch.nn.parallel import DistributedDataParallel as DDP
-from tqdm import tqdm
 
 from pilot.model import get_model
 from pilot.data import fl_shard_dataloader
@@ -130,8 +129,9 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     # Create a single list of assignments for the whole client
     all_shard_assignments = list(zip(shard_ids, shard_starts))
     
-    # Give each rank its own slice of the assignments
-    shard_assignments = all_shard_assignments[rank::world_size]
+    # All ranks get the same full list of assignments. The dataloader is responsible
+    # for ensuring each rank processes a unique subset of data *within* each shard.
+    shard_assignments = all_shard_assignments
 
     # Scheduler Config
     # LRs and momentum are now scheduled by the server per round
@@ -155,8 +155,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     if sys.platform == "linux" and device.type == "cuda":
         if rank == 0:
             log(INFO, "Compiling model with torch.compile...")
-        model = torch.compile(model)
-
+        model = torch.compile(model, dynamic=False)
     if world_size > 1:
         model = DDP(model, device_ids=[rank])
 
@@ -207,7 +206,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     total_loss = 0.0
     batches_processed = 0
     shard_progress = {}  # Tracks absolute current_row
-    log_interval = context.run_config.get("log_interval", 1)
+    log_interval = context.run_config["log_interval"]
     last_log_time = time.time()
 
     # Setup Redis for logging
@@ -215,10 +214,17 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     log_key = f"logs:{node_name}"
     redis_client.delete(log_key)
 
-    # Tqdm only on rank 0
-    iterator = tqdm(trainloader, desc="Training") if rank == 0 else trainloader
+    iterator = iter(trainloader)
 
-    for inputs, targets, shard_id, current_row, shard_progress_val in iterator:
+    # Prefetch the first batch
+    try:
+        inputs, targets, shard_id, current_row, shard_progress_val = next(iterator)
+    except StopIteration:
+        log(INFO, f"Rank {rank}: Dataloader is empty, skipping training loop.")
+        iterator = None # Mark as exhausted
+
+    while iterator:
+        # Note: 'inputs' and 'targets' are from the *previous* iteration's prefetch
         inputs = inputs.to(device)
         targets = targets.to(device)
 
@@ -227,6 +233,13 @@ def run_training_process(rank, world_size, msg, context, result_dict):
             loss = loss / gradient_accumulation_steps
 
         loss.backward()
+
+        # Prefetch the next batch while the GPU is busy
+        try:
+            inputs, targets, shard_id, current_row, shard_progress_val = next(iterator)
+        except StopIteration:
+            iterator = None # Mark as exhausted to exit loop
+
         batches_processed += 1
 
         if batches_processed % gradient_accumulation_steps == 0:
@@ -255,11 +268,12 @@ def run_training_process(rank, world_size, msg, context, result_dict):
             model.zero_grad(set_to_none=True)
 
             step_count = batches_processed // gradient_accumulation_steps
+            # This is the main Redis log, happens per optimizer step
             if rank == 0 and log_interval and step_count % log_interval == 0:
-                current_time = time.time()
-                dt = current_time - last_log_time
+                # Note: dt here is for the Redis logging interval, not the console log
+                redis_dt = time.time() - last_log_time
 
-                # Calculate global step for logging
+                # (logging calculations)
                 tokens_processed_locally = (
                     batches_processed * device_batch_size * max_seq_len * world_size
                 )
@@ -267,32 +281,33 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                     global_tokens_processed_start + tokens_processed_locally
                 )
                 current_step = total_global_tokens // total_batch_size
-
-                # Calculate tokens per second (approximate based on fixed batch size and max length)
-                # Note: Multiply by world_size for global throughput
-                # dt covers 'log_interval' steps, each having 'gradient_accumulation_steps' micro-batches
-                tokens_processed_since_log = (
-                    log_interval
+                
+                # We calculate tok/sec for redis based on its own interval
+                redis_log_steps = log_interval
+                tokens_processed_since_redis_log = (
+                    redis_log_steps
                     * gradient_accumulation_steps
                     * device_batch_size
                     * max_seq_len
                     * world_size
                 )
-                tok_per_sec = tokens_processed_since_log / dt
+                tok_per_sec = tokens_processed_since_redis_log / redis_dt
 
-                # Extract effective LRs from optimizers for logging
-                # AdamW groups: 0=unembed, 1=embed, 2=resid_scalar, 3=x0_scalar
                 eff_unembedding_lr = adamw_optimizer.param_groups[0]['lr']
                 eff_embedding_lr = adamw_optimizer.param_groups[1]['lr']
-                # The two scalar groups have different base LRs, but we'll log the x0_scalar one for simplicity
                 eff_scalar_lr = adamw_optimizer.param_groups[3]['lr']
                 eff_matrix_lr = muon_optimizer.param_groups[0]['lr']
-
                 loss_scalar = loss.item() * gradient_accumulation_steps
+
+                # Console log for a quick pulse-check
+                log(
+                    INFO,
+                    f"Step {current_step} | Loss: {loss_scalar:.4f} | LR: {eff_matrix_lr:.2e} (emb: {eff_embedding_lr:.2e}, unem: {eff_unembedding_lr:.2e}) | Mom: {muon_momentum:.2f} | WD: {muon_weight_decay:.2e} | Tok/sec: {int(tok_per_sec):,} | dt: {redis_dt*1000:.0f}ms"
+                )
 
                 log_entry = {
                     "step": current_step,
-                    "timestamp": current_time,
+                    "timestamp": time.time(),
                     f"client_{client_id}/train_loss": loss_scalar,
                     f"client_{client_id}/train_ppl": math.exp(loss_scalar),
                     f"client_{client_id}/lr_multiplier": lrm,
@@ -305,22 +320,11 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                     f"client_{client_id}/tok_per_sec": tok_per_sec,
                 }
                 redis_client.rpush(log_key, json.dumps(log_entry))
-                last_log_time = current_time
+                last_log_time = time.time()
 
         total_loss += loss.item() * gradient_accumulation_steps
 
-        if rank == 0:
-            iterator.set_postfix(
-                {
-                    "loss": loss.item() * gradient_accumulation_steps,
-                    "shard": shard_id,
-                    "shard_progress": f"{shard_progress_val:.1%}",
-                }
-            )
-
-        # Track progress (all ranks need to track this for resumption, but we report rank 0's view or similar)
-        # Actually shard_progress depends on rank striding.
-        # But for 'processed_rows' updates in ShardManager, we can just use the reported current_row.
+        # Track progress
         shard_progress[shard_id] = current_row
 
         # Check for stop signal (non-blocking)
@@ -331,6 +335,11 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                 f"Rank {rank}: Stop signal received ({redis_msg['data'].decode('utf-8')}) after batch {batches_processed}",
             )
             break
+        
+        # Break loop if dataloader is exhausted
+        if not iterator:
+            break
+
 
     # Flush gradients
     if (batches_processed % gradient_accumulation_steps) != 0:
@@ -357,7 +366,9 @@ def run_training_process(rank, world_size, msg, context, result_dict):
             global_shard_progress = {}
             for progress_list in gathered_progress_lists:
                 for shard_id, current_row in progress_list:
-                    global_shard_progress[shard_id] = current_row
+                    # Update only if this rank's progress for this shard is further
+                    if current_row > global_shard_progress.get(shard_id, -1):
+                        global_shard_progress[shard_id] = current_row
             shard_progress = global_shard_progress # Update the shard_progress dict for rank 0
 
         # Destroy process group after gathering progress
