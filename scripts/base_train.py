@@ -384,8 +384,8 @@ while True:
     pct_done = 100 * step / num_iterations
     tok_per_sec = int(args.total_batch_size / dt)
     flops_per_sec = num_flops_per_token * args.total_batch_size / dt
-    promised_flops_per_sec_h100 = 989e12 * ddp_world_size # bfloat16 H100 SXM and without 2:4 sparsity
-    mfu = 100 * flops_per_sec / promised_flops_per_sec_h100 # in %
+    promised_flops_per_sec_a100 = 312e12 * ddp_world_size # bfloat16 A100
+    mfu = 100 * flops_per_sec / promised_flops_per_sec_a100 # in %
     if step > 10:
         total_training_time += dt # only count the time after the first 10 steps
     # Calculate ETA based on average time per step (excluding first 10 steps)
