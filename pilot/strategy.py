@@ -253,7 +253,14 @@ class PilotAvg(Strategy):
 
                 # Update shard states from worker results
                 metrics: MetricRecord = reply.content["metrics"]
-                self.shard_manager.update(metrics["shard_ids"], metrics["shard_rows"])
+                shard_ids = metrics.get("shard_ids", [])
+                shard_rows = metrics.get("shard_rows", [])
+                shard_totals = metrics.get("shard_totals")  # Defaults to None
+                self.shard_manager.update(
+                    shard_ids=shard_ids,
+                    shard_rows=shard_rows,
+                    shard_totals=shard_totals,
+                )
 
                 # Accumulate global tokens
                 if "num_tokens_processed" in metrics:

@@ -70,17 +70,31 @@ class ShardManager:
 
         return assignments
 
-    def update(self, shard_ids: list[int], shard_rows: list[int]):
+    def update(
+        self,
+        shard_ids: list[int],
+        shard_rows: list[int],
+        shard_totals: list[int] | None = None,
+    ):
         """Update multiple shard states after training.
 
         Args:
-            shard_ids: List of shard IDs
-            shard_rows: List of absolute row positions for each shard
+            shard_ids: List of shard IDs.
+            shard_rows: List of absolute row positions for each shard.
+            shard_totals: List of total rows for each shard.
         """
-        for shard_id, new_row in zip(shard_ids, shard_rows):
+        if shard_totals is None:
+            shard_totals = [0] * len(shard_ids)
+
+        for shard_id, new_row, total_rows in zip(shard_ids, shard_rows, shard_totals):
             # The client reports the 0-indexed row it has processed. To get the
             # number of rows processed so far, we use `new_row + 1`.
             num_processed = new_row + 1
+
+            # Update total_rows if client provides it
+            if total_rows > 0:
+                self.shard_states[shard_id]["total_rows"] = total_rows
+
             if num_processed > self.shard_states[shard_id].get("processed_rows", 0):
                 self.shard_states[shard_id]["processed_rows"] = num_processed
 

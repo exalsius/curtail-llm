@@ -11,9 +11,11 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
+import pyarrow.parquet as pq
 from flwr.common import ConfigRecord, log
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+from nanochat.common import get_base_dir
 from pilot.model import get_model
 from pilot.data import fl_shard_dataloader
 
@@ -134,6 +136,17 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     # All ranks get the same full list of assignments. The dataloader is responsible
     # for ensuring each rank processes a unique subset of data *within* each shard.
     shard_assignments = all_shard_assignments
+
+    # Get total_rows for assigned shards (only on rank 0 to avoid redundant reads)
+    shard_total_rows = {}
+    if rank == 0:
+        base_dir = get_base_dir()
+        data_dir = os.path.join(base_dir, "base_data")
+        for shard_id, _ in shard_assignments:
+            filepath = os.path.join(data_dir, f"shard_{shard_id:05d}.parquet")
+            if os.path.exists(filepath):
+                pf = pq.ParquetFile(filepath)
+                shard_total_rows[shard_id] = pf.metadata.num_rows
 
     # Scheduler Config
     # LRs and momentum are now scheduled by the server per round
@@ -401,6 +414,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
         # Convert shard_progress to two parallel lists
         shard_ids = list(shard_progress.keys())
         shard_rows = list(shard_progress.values())
+        shard_totals = [shard_total_rows.get(s_id, 0) for s_id in shard_ids]
 
         # Unwrap model from DDP and torch.compile wrappers
         unwrapped_model = model
@@ -426,6 +440,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
                             "num_tokens_processed": tokens_processed_round,
                             "shard_ids": shard_ids,
                             "shard_rows": shard_rows,
+                            "shard_totals": shard_totals,
                             "cumulative_batches": new_cumulative_batches,
                         }
                     ),
