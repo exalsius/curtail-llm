@@ -349,7 +349,7 @@ class PilotAvg(Strategy):
         grid: Grid,
         initial_arrays: ArrayRecord,
         num_rounds: int = 1e100,
-        timeout: float = 3600,
+        timeout: float = None,  # No timeout, clients can take as long as needed
         train_config: Optional[ConfigRecord] = None,
         evaluate_config: Optional[ConfigRecord] = None,
         evaluate_fn: Optional[callable] = None,
