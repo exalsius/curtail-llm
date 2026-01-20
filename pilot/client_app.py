@@ -21,7 +21,7 @@ from pilot.data import fl_shard_dataloader
 app = ClientApp()
 
 
-def run_training_process(rank, world_size, msg, context, result_dict):
+def run_training_process(rank, world_size, msg, context, result_dict, round_start_time):
     client_id = context.node_config.get("partition-id", 0)
     node_name = context.node_config.get("name", f"client_{client_id}")
     config: ConfigRecord = msg.content["config"]
@@ -317,7 +317,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                 # Console log for a quick pulse-check
                 log(
                     INFO,
-                    f"Step {current_step} | Loss: {loss_scalar:.4f} | Tok/sec: {int(tok_per_sec):,} | MFU: {mfu:.2f}% | Step duration: {log_interval_duration*1000:.0f}ms",
+                    f"Step {current_step} | Loss: {loss_scalar:.4f} | Tok/sec: {int(tok_per_sec):,} | MFU: {mfu:.2f}% | Step duration: {log_interval_duration*1000:.0f}ms | Round duration: {(time.time() - round_start_time):.0f}s",
                 )
 
                 log_entry = {
@@ -443,13 +443,14 @@ def train(msg: Message, context: Context):
     else:
         num_gpus = 0
 
+    round_start_time = time.time()
     if num_gpus > 1:
         log(INFO, f"Spawning {num_gpus} processes for DDP training")
         manager = mp.Manager()
         result_dict = manager.dict()
         mp.spawn(
             run_training_process,
-            args=(num_gpus, msg, context, result_dict),
+            args=(num_gpus, msg, context, result_dict, round_start_time),
             nprocs=num_gpus,
             join=True,
         )
@@ -461,7 +462,7 @@ def train(msg: Message, context: Context):
         # Run single process
         # Use a dummy dict to capture result
         result_dict = {}
-        run_training_process(0, 1, msg, context, result_dict)
+        run_training_process(0, 1, msg, context, result_dict, round_start_time)
         return result_dict["message"]
 
 
