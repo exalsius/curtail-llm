@@ -145,7 +145,7 @@ def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_
         world_size: Total workers (for DDP)
 
     Yields:
-        (inputs, targets, shard_id, current_row, progress_fraction)
+        (inputs, targets, shard_id, current_row, total_rows)
     """
     base_dir = get_base_dir()
     data_dir = os.path.join(base_dir, "base_data")
@@ -175,7 +175,8 @@ def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_
         # Each rank starts processing from a different row group offset
         rg_idx = start_rg_idx + rank
         
-        log(INFO, f"Rank {rank}: Processing shard {shard_id} from row group {rg_idx} (starts at row {start_row}/{total_rows})")
+        if rank == 0:
+            log(INFO, f"Processing shard {shard_id} starting at row {start_row}/{total_rows}")")
 
         while rg_idx < pf.num_row_groups:
             rg = pf.read_row_group(rg_idx)
@@ -211,8 +212,7 @@ def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_
                         inputs = scratch[:-1].view(B, T).to(device=device, non_blocking=use_cuda)
                         targets = scratch[1:].view(B, T).to(device=device, non_blocking=use_cuda)
                         
-                        progress_frac = (current_row + 1) / total_rows if total_rows > 0 else 0
-                        yield inputs, targets, shard_id, current_row, progress_frac
+                        yield inputs, targets, shard_id, current_row, total_rows
             
             rg_idx += world_size # Move to the next row group for this rank
 

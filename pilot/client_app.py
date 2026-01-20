@@ -131,22 +131,9 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     shard_starts = config.get("shard_starts", [])
     
     # Create a single list of assignments for the whole client
-    all_shard_assignments = list(zip(shard_ids, shard_starts))
-    
     # All ranks get the same full list of assignments. The dataloader is responsible
     # for ensuring each rank processes a unique subset of data *within* each shard.
-    shard_assignments = all_shard_assignments
-
-    # Get total_rows for assigned shards (only on rank 0 to avoid redundant reads)
-    shard_total_rows = {}
-    if rank == 0:
-        base_dir = get_base_dir()
-        data_dir = os.path.join(base_dir, "base_data")
-        for shard_id, _ in shard_assignments:
-            filepath = os.path.join(data_dir, f"shard_{shard_id:05d}.parquet")
-            if os.path.exists(filepath):
-                pf = pq.ParquetFile(filepath)
-                shard_total_rows[shard_id] = pf.metadata.num_rows
+    shard_assignments = list(zip(shard_ids, shard_starts))
 
     # Scheduler Config
     # LRs and momentum are now scheduled by the server per round
@@ -227,6 +214,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     total_loss = 0.0
     batches_processed = 0
     shard_progress = {}  # Tracks absolute current_row
+    shard_total_rows = {} # Tracks total_rows per shard
     log_interval = context.run_config["log_interval"]
     last_log_time = time.time()
 
@@ -239,7 +227,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
 
     # Prefetch the first batch
     try:
-        inputs, targets, shard_id, current_row, shard_progress_val = next(iterator)
+        inputs, targets, shard_id, current_row, total_rows = next(iterator)
     except StopIteration:
         log(INFO, f"Rank {rank}: Dataloader is empty, skipping training loop.")
         iterator = None # Mark as exhausted
@@ -257,7 +245,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
 
         # Prefetch the next batch while the GPU is busy
         try:
-            inputs, targets, shard_id, current_row, shard_progress_val = next(iterator)
+            inputs, targets, shard_id, current_row, total_rows = next(iterator)
         except StopIteration:
             iterator = None # Mark as exhausted to exit loop
 
@@ -355,6 +343,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
 
         # Track progress
         shard_progress[shard_id] = current_row
+        shard_total_rows[shard_id] = total_rows
 
         # Check for stop signal (non-blocking)
         redis_msg = pubsub.get_message(timeout=0)
@@ -380,25 +369,36 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
 
     # Gather shard progress from all ranks if DDP is used
     if world_size > 1:
-        # Convert local shard_progress dict to list of tuples for gathering
-        local_progress_list = [(s_id, c_row) for s_id, c_row in shard_progress.items()]
+        # Convert local dicts to lists of tuples for gathering
+        local_progress_list = list(shard_progress.items())
+        local_totals_list = list(shard_total_rows.items())
         
-        # Gather all local_progress_lists on rank 0
+        # Gather all local lists on rank 0
         if rank == 0:
             gathered_progress_lists = [None for _ in range(world_size)]
+            gathered_totals_lists = [None for _ in range(world_size)]
             dist.gather_object(local_progress_list, gathered_progress_lists, dst=0)
+            dist.gather_object(local_totals_list, gathered_totals_lists, dst=0)
         else:
             dist.gather_object(local_progress_list, dst=0)
+            dist.gather_object(local_totals_list, dst=0)
 
-        # On rank 0, combine all gathered progress into a single dictionary
+        # On rank 0, combine all gathered items into single dictionaries
         if rank == 0:
             global_shard_progress = {}
+            global_shard_totals = {}
+            # Combine progress
             for progress_list in gathered_progress_lists:
                 for shard_id, current_row in progress_list:
-                    # Update only if this rank's progress for this shard is further
+                    # Update only if this rank's progress is further
                     if current_row > global_shard_progress.get(shard_id, -1):
                         global_shard_progress[shard_id] = current_row
-            shard_progress = global_shard_progress # Update the shard_progress dict for rank 0
+            # Combine totals
+            for totals_list in gathered_totals_lists:
+                global_shard_totals.update(dict(totals_list))
+            
+            shard_progress = global_shard_progress
+            shard_total_rows = global_shard_totals
 
         # Destroy process group after gathering progress
         dist.destroy_process_group()
