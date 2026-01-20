@@ -95,7 +95,7 @@ cd /workspace/pilot
 source .venv/bin/activate
 export NANOCHAT_BASE_DIR=/workspace/cache/nanochat/
 
-CUDA_VISIBLE_DEVICES=2,3 flower-supernode --insecure \
+CUDA_VISIBLE_DEVICES=4,5,6,7 flower-supernode --insecure \
   --superlink 127.0.0.1:9092 \
   --clientappio-api-address 127.0.0.1:9095 \
   --node-config 'name="client_1" partition-id=1'

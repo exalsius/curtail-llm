@@ -538,7 +538,7 @@ def _determine_round_end(
     redis_client.publish(f"round:{current_round}:stop", f"END ROUND {current_round}")
     log(
         INFO,
-        f"Signaled ROUND END after {int(time.time() - start_time)}s with {len(list(grid.get_node_ids()))} connected Flower clients.",
+        f"🛑 Signaled ROUND END after {int(time.time() - start_time)}s with {len(list(grid.get_node_ids()))} connected Flower clients.",
     )
 
 
