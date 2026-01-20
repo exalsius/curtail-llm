@@ -70,7 +70,7 @@ def main(grid: Grid, context: Context) -> None:
         redis_url=context.run_config["redis_url"],
         round_min_duration=context.run_config["round_min_duration"],
         provisioner=provisioner,
-        forecast_api_url=context.run_config["forecast_api_url"],
+        mci_api_url=context.run_config["mci_api_url"],
         wandb_project=wandb_project,
     )
 

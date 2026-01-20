@@ -78,7 +78,7 @@ tokenizer_batch_size = 128
 log_interval = 1
 
 # exls_cluster_id = "your-cluster-uuid"
-forecast_api_url = "http://localhost:8700"
+mci_api_url = "http://localhost:8700"
 clients = {client_0 = {exls_node_id = "uuid-1", provision_threshold = 100, deprovision_threshold = 200}, client_1 = {exls_node_id = "uuid-2", provision_threshold = 80, deprovision_threshold = 150}}
 
 

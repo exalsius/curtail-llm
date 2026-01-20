@@ -104,7 +104,7 @@ class PilotAvg(Strategy):
         redis_url: str,
         round_min_duration: int,
         provisioner: Optional[ExlsProvisioner],
-        forecast_api_url: str,
+        mci_api_url: str,
         wandb_project: Optional[str] = None,
     ) -> None:
         self.clients: dict[str, Client] = clients
@@ -114,7 +114,7 @@ class PilotAvg(Strategy):
         self.redis_url = redis_url
         self.round_min_duration = round_min_duration
         self.provisioner = provisioner
-        self.forecast_api_url = forecast_api_url
+        self.mci_api_url = mci_api_url
         self.wandb_project = wandb_project
 
         self.redis_client = redis.from_url(redis_url)
@@ -372,7 +372,7 @@ class PilotAvg(Strategy):
                     self.clients,
                     self.redis_client,
                     self.provisioner,
-                    self.forecast_api_url,
+                    self.mci_api_url,
                 ),
                 daemon=True,
             )
@@ -506,12 +506,12 @@ def _provisioning_task(
     clients: dict[str, Client],
     redis_client: Redis,
     provisioner: ExlsProvisioner,
-    forecast_api_url: str,
+    mci_api_url: str,
 ):
     """Monitor clients for provisioning and deprovisioning decisions."""
     while True:
         for client in clients.values():
-            mci = get_mci(forecast_api_url, client.name)
+            mci = get_mci(mci_api_url, client.name)
             client.update_provisioning(redis_client, provisioner, mci)
         time.sleep(5)
 

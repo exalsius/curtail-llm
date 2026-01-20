@@ -175,8 +175,7 @@ def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_
         # Each rank starts processing from a different row group offset
         rg_idx = start_rg_idx + rank
         
-        if rank == 0:
-            log(INFO, f"Processing shard {shard_id} starting at row {start_row}/{total_rows}")
+        log(INFO, f"Rank {rank}: Processing shard {shard_id} from row group {rg_idx} (starts at row {start_row}/{total_rows})")
 
         while rg_idx < pf.num_row_groups:
             rg = pf.read_row_group(rg_idx)
