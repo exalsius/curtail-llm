@@ -321,6 +321,10 @@ class PilotAvg(Strategy):
             log_dict["server/global_step"] = summary_step
             wandb.log(log_dict)
 
+        if arrays is None:
+            log(INFO, "aggregate_train: No valid results to aggregate.")
+            log(INFO, replies)
+
         return arrays, metrics
 
     def configure_evaluate(
@@ -352,6 +356,7 @@ class PilotAvg(Strategy):
         log(INFO, f"\t├── ConfigRecord (train): {config_to_str(train_config)}")
         self.summary()
         train_config = ConfigRecord() if train_config is None else train_config
+        train_config["experiment_start_time"] = int(time.time())
 
         if self.provisioner:
             provisioning_thread = threading.Thread(

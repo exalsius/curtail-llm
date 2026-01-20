@@ -26,6 +26,8 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     node_name = context.node_config.get("name", f"client_{client_id}")
     config: ConfigRecord = msg.content["config"]
 
+    experiment_start_time = int(config.get("experiment_start_time", time.time()))
+
     if world_size > 1:
         os.environ["MASTER_ADDR"] = "localhost"
         os.environ["MASTER_PORT"] = str(12355 + int(client_id))
@@ -138,10 +140,11 @@ def run_training_process(rank, world_size, msg, context, result_dict):
     muon_momentum = float(config.get("muon_momentum", 0.95))
     global_tokens_processed_start = int(config.get("global_tokens_processed_start", 0))
 
-    log(
-        INFO,
-        f"Rank {rank}/{world_size} assigned {len(shard_assignments)} shards: {shard_assignments}",
-    )
+    if rank == 0:
+        log(
+            INFO,
+            f"Assigned {len(shard_assignments)} shards to {world_size} workers: {shard_assignments}",
+        )
 
     # Load model
     model = get_model(config, max_seq_len)
@@ -183,6 +186,11 @@ def run_training_process(rank, world_size, msg, context, result_dict):
 
     # Initialize optimizers (Muon + AdamW)
     raw_model = getattr(model, "module", model)
+
+    # Flop estimation
+    num_flops_per_token = raw_model.estimate_flops()
+    promised_flops_per_sec_a100 = 312e12 * world_size
+
     optimizers = raw_model.setup_optimizers(
         unembedding_lr=unembedding_lr * batch_lr_scale,
         embedding_lr=embedding_lr * batch_lr_scale,
@@ -271,7 +279,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
             # This is the main Redis log, happens per optimizer step
             if rank == 0 and log_interval and step_count % log_interval == 0:
                 # Note: dt here is for the Redis logging interval, not the console log
-                redis_dt = time.time() - last_log_time
+                log_interval_duration = time.time() - last_log_time
 
                 # (logging calculations)
                 tokens_processed_locally = (
@@ -291,23 +299,30 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                     * max_seq_len
                     * world_size
                 )
-                tok_per_sec = tokens_processed_since_redis_log / redis_dt
+                tok_per_sec = tokens_processed_since_redis_log / log_interval_duration
 
-                eff_unembedding_lr = adamw_optimizer.param_groups[0]['lr']
-                eff_embedding_lr = adamw_optimizer.param_groups[1]['lr']
-                eff_scalar_lr = adamw_optimizer.param_groups[3]['lr']
-                eff_matrix_lr = muon_optimizer.param_groups[0]['lr']
+                flops_per_sec = num_flops_per_token * tok_per_sec
+                mfu = (
+                    100 * flops_per_sec / promised_flops_per_sec_a100
+                    if promised_flops_per_sec_a100 > 0
+                    else 0.0
+                )
+
+                eff_unembedding_lr = adamw_optimizer.param_groups[0]["lr"]
+                eff_embedding_lr = adamw_optimizer.param_groups[1]["lr"]
+                eff_scalar_lr = adamw_optimizer.param_groups[3]["lr"]
+                eff_matrix_lr = muon_optimizer.param_groups[0]["lr"]
                 loss_scalar = loss.item() * gradient_accumulation_steps
 
                 # Console log for a quick pulse-check
                 log(
                     INFO,
-                    f"Step {current_step} | Loss: {loss_scalar:.4f} | LR: {eff_matrix_lr:.2e} (emb: {eff_embedding_lr:.2e}, unem: {eff_unembedding_lr:.2e}) | Mom: {muon_momentum:.2f} | WD: {muon_weight_decay:.2e} | Tok/sec: {int(tok_per_sec):,} | dt: {redis_dt*1000:.0f}ms"
+                    f"Step {current_step} | Loss: {loss_scalar:.4f} | Tok/sec: {int(tok_per_sec):,} | MFU: {mfu:.2f}% | Step duration: {log_interval_duration*1000:.0f}ms",
                 )
 
                 log_entry = {
                     "step": current_step,
-                    "timestamp": time.time(),
+                    "time": int(time.time() - experiment_start_time),
                     f"client_{client_id}/train_loss": loss_scalar,
                     f"client_{client_id}/train_ppl": math.exp(loss_scalar),
                     f"client_{client_id}/lr_multiplier": lrm,
@@ -318,6 +333,7 @@ def run_training_process(rank, world_size, msg, context, result_dict):
                     f"client_{client_id}/momentum": muon_momentum,
                     f"client_{client_id}/weight_decay": muon_weight_decay,
                     f"client_{client_id}/tok_per_sec": tok_per_sec,
+                    f"client_{client_id}/mfu": mfu,
                 }
                 redis_client.rpush(log_key, json.dumps(log_entry))
                 last_log_time = time.time()
