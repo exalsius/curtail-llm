@@ -296,7 +296,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
                 
                 log(
                     INFO,
-                    f"Step {current_step} ({log_interval_duration*1000:.0f}ms) | Shard: {shard_id} | "
+                    f"Step {current_step} ({log_interval_duration*1000:.0f}ms) | Shard: {shard_id} (row {current_row}/{total_rows}) | "
                     f"Loss: {loss_scalar:.4f} | Tok/sec: {int(tok_per_sec):,} | MFU: {mfu:.2f}% | "
                     f"Round duration: {(time.time() - round_start_time):.0f}s",
                 )
@@ -319,18 +319,18 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
                 _log_to_redis(redis_client, log_key, log_entry)
                 last_log_time = time.time()
 
+            # Check for stop signal (non-blocking) - ONLY after a full step
+            redis_msg = pubsub.get_message(timeout=0)
+            if redis_msg and redis_msg["type"] == "message":
+                if rank == 0:
+                    log(INFO, f"🛑 Stop signal received ({redis_msg['data'].decode('utf-8')}) after batch {batches_processed}")
+                break
+
         total_loss += loss.item() * gradient_accumulation_steps
 
         # Track progress
         shard_progress[shard_id] = current_row
         shard_total_rows[shard_id] = total_rows
-
-        # Check for stop signal (non-blocking)
-        redis_msg = pubsub.get_message(timeout=0)
-        if redis_msg and redis_msg["type"] == "message":
-            if rank == 0:
-                log(INFO, f"🛑 Stop signal received ({redis_msg['data'].decode('utf-8')}) after batch {batches_processed}")
-            break
         
         # Break loop if dataloader is exhausted
         if not iterator:
