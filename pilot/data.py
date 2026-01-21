@@ -58,7 +58,7 @@ class ShardManager:
         if shard_totals is None:
             shard_totals = [0] * len(shard_ids)
         for shard_id, new_row, total_rows in zip(shard_ids, shard_rows, shard_totals):
-            num_processed = new_row + 1
+            num_processed = new_row
             if total_rows > 0:
                 self.shard_states[shard_id]["total_rows"] = total_rows
             if num_processed > self.shard_states[shard_id].get("processed_rows", 0):
@@ -161,7 +161,3 @@ def fl_shard_dataloader(
             
             cumulative_rows += pf.metadata.row_group(rg_idx).num_rows
             rg_idx += 1
-
-        if token_buffer:
-            log(INFO, f"Rank {rank}: Discarding {len(token_buffer)} tokens from shard {shard_id}")
-            token_buffer.clear()

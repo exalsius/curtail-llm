@@ -290,31 +290,27 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
 
             step_count = batches_processed // gradient_accumulation_steps
             if rank == 0 and log_interval and step_count % log_interval == 0:
-                # Note: dt here is for the Redis logging interval, not the console log
                 log_interval_duration = time.time() - last_log_time
                 
-                # (logging calculations)
                 tokens_processed_locally = batches_processed * device_batch_size * max_seq_len * world_size
                 total_global_tokens = global_tokens_processed_start + tokens_processed_locally
                 current_step = total_global_tokens // total_batch_size
                 
-                # We calculate tok/sec for redis based on its own interval
-                redis_log_steps = log_interval
-                tokens_processed_since_redis_log = (
-                    redis_log_steps * gradient_accumulation_steps * device_batch_size * max_seq_len * world_size
+                tokens_processed_since_last_log = (
+                    log_interval * gradient_accumulation_steps * device_batch_size * max_seq_len * world_size
                 )
-                tok_per_sec = tokens_processed_since_redis_log / log_interval_duration
+                tok_per_sec = tokens_processed_since_last_log / log_interval_duration
 
                 flops_per_sec = raw_model.estimate_flops() * tok_per_sec
                 mfu = (100 * flops_per_sec / (312e12 * world_size)) if world_size > 0 else 0.0
                 
                 loss_scalar = loss.item() * gradient_accumulation_steps
                 
-                # Console log for a quick pulse-check
                 log(
                     INFO,
-                    f"Step {current_step} | Loss: {loss_scalar:.4f} | Tok/sec: {int(tok_per_sec):,} | MFU: {mfu:.2f}% | "
-                    f"Step duration: {log_interval_duration*1000:.0f}ms | Round duration: {(time.time() - round_start_time):.0f}s",
+                    f"Step {current_step} ({log_interval_duration*1000:.0f}ms) | Shard: {shard_id} | "
+                    f"Loss: {loss_scalar:.4f} | Tok/sec: {int(tok_per_sec):,} | MFU: {mfu:.2f}% | "
+                    f"Round duration: {(time.time() - round_start_time):.0f}s",
                 )
 
                 log_entry = {
