@@ -165,8 +165,8 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     # Create dataloader
     trainloader = fl_shard_dataloader(
         shard_assignments=shard_assignments,
-        B=device_batch_size,
-        T=max_seq_len,
+        batch_size=device_batch_size,
+        sequence_length=max_seq_len,
         tokenizer_threads=context.run_config["tokenizer_threads"],
         tokenizer_batch_size=context.run_config["tokenizer_batch_size"],
         device=device.type if world_size == 1 else "cuda",
