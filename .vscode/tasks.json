@@ -39,11 +39,11 @@
     {
       "label": "term: all (5 terminals)",
       "dependsOn": [
-        "term: superlink (tmux)",
-        "term: client_0 (tmux)",
-        "term: client_1 (tmux)",
-        "term: bash (pilot venv)",
-        "term: gemini"
+        "superlink",
+        "client_0",
+        "client_1",
+        "bash",
+        "gemini"
       ],
       "problemMatcher": []
     }
