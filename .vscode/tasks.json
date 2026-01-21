@@ -1,0 +1,51 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "superlink",
+      "type": "shell",
+      "command": "tmux new -A -s superlink",
+      "presentation": { "reveal": "always", "panel": "new" },
+      "problemMatcher": []
+    },
+    {
+      "label": "client_0",
+      "type": "shell",
+      "command": "tmux new -A -s client_0",
+      "presentation": { "reveal": "always", "panel": "new" },
+      "problemMatcher": []
+    },
+    {
+      "label": "client_1",
+      "type": "shell",
+      "command": "tmux new -A -s client_1",
+      "presentation": { "reveal": "always", "panel": "new" },
+      "problemMatcher": []
+    },
+    {
+      "label": "bash",
+      "type": "shell",
+      "command": "cd /workspace/pilot && source .venv/bin/activate && exec $SHELL -l",
+      "presentation": { "reveal": "always", "panel": "new" },
+      "problemMatcher": []
+    },
+    {
+      "label": "gemini",
+      "type": "shell",
+      "command": "gemini",
+      "presentation": { "reveal": "always", "panel": "new" },
+      "problemMatcher": []
+    },
+    {
+      "label": "term: all (5 terminals)",
+      "dependsOn": [
+        "term: superlink (tmux)",
+        "term: client_0 (tmux)",
+        "term: client_1 (tmux)",
+        "term: bash (pilot venv)",
+        "term: gemini"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}
