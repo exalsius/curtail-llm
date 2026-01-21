@@ -123,22 +123,8 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
         frac = min(it / 300, 1)
         return (1 - frac) * 0.85 + frac * 0.95
 
-    # Weight decay is tuned at d12 and its scaling seems to be \propto 1/channels^2
-    depth = int(config["n_layer"])
-    weight_decay_base = float(config["weight_decay"])
-    weight_decay_scaled = weight_decay_base * (12 / depth) ** 2
-    if depth != 12:
-        log(INFO, f"Scaling weight decay from {weight_decay_base:.6f} to {weight_decay_scaled:.6f} for depth {depth}")
     def get_weight_decay(it):
-        return weight_decay_scaled * (1 - it / num_iterations)
-
-    # Batch size scaling for learning rates
-    batch_lr_scale = 1.0
-    reference_batch_size = 2**19
-    batch_ratio = total_batch_size / reference_batch_size
-    if batch_ratio != 1.0:
-        batch_lr_scale = batch_ratio**0.5
-        log(INFO, f"Scaling LRs by {batch_lr_scale:.4f} for batch size {total_batch_size:,}")
+        return float(config["weight_decay_scaled"]) * (1 - it / num_iterations)
 
     # Gradient accumulation
     tokens_per_fwdbwd = device_batch_size * max_seq_len * world_size
@@ -194,12 +180,12 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     model.train()
     raw_model = getattr(model, "module", model)
     optimizers = raw_model.setup_optimizers(
-        unembedding_lr=float(config["unembedding_lr"]) * batch_lr_scale,
-        embedding_lr=float(config["embedding_lr"]) * batch_lr_scale,
-        matrix_lr=float(config["matrix_lr"]) * batch_lr_scale,
+        unembedding_lr=float(config["unembedding_lr"]) * float(config["batch_lr_scale"]),
+        embedding_lr=float(config["embedding_lr"]) * float(config["batch_lr_scale"]),
+        matrix_lr=float(config["matrix_lr"]) * float(config["batch_lr_scale"]),
         weight_decay=weight_decay_scaled, # Note: this is base decay, per-step is applied later
         adam_betas=(float(config["adam_beta1"]), float(config["adam_beta2"])),
-        scalar_lr=float(config["scalar_lr"]) * batch_lr_scale,
+        scalar_lr=float(config["scalar_lr"]) * float(config["batch_lr_scale"]),
     )
     adamw_optimizer, muon_optimizer = optimizers
 

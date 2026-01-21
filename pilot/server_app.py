@@ -74,6 +74,22 @@ def main(grid: Grid, context: Context) -> None:
         wandb_project=wandb_project,
     )
 
+    # Calculate derived parameters
+    # Batch size scaling for learning rates
+    batch_lr_scale = 1.0
+    reference_batch_size = 2**19
+    batch_ratio = total_batch_size / reference_batch_size
+    if batch_ratio != 1.0:
+        batch_lr_scale = batch_ratio**0.5
+        log(INFO, f"Scaling LRs by {batch_lr_scale:.4f} for batch size {total_batch_size:,}")
+
+    # Weight decay is tuned at d12 and its scaling seems to be \propto 1/channels^2
+    depth = int(context.run_config["n_layer"])
+    weight_decay_base = float(context.run_config["weight_decay"])
+    weight_decay_scaled = weight_decay_base * (12 / depth) ** 2
+    if depth != 12:
+        log(INFO, f"Scaling weight decay from {weight_decay_base:.6f} to {weight_decay_scaled:.6f} for depth {depth}")
+
     # Extract scheduler config
     train_config_dict = {
         "matrix_lr": float(context.run_config["matrix_lr"]),
@@ -95,6 +111,8 @@ def main(grid: Grid, context: Context) -> None:
         "n_embd": int(context.run_config["n_embd"]),
         "n_head": int(context.run_config["n_head"]),
         "n_kv_head": int(context.run_config["n_kv_head"]),
+        "batch_lr_scale": batch_lr_scale,
+        "weight_decay_scaled": weight_decay_scaled,
     }
 
     # Load global model
