@@ -94,9 +94,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
         )
 
     if "cumulative_batches" in context.state:
-        cumulative_batches = int(
-            context.state["cumulative_batches"]["cumulative_batches"]
-        )
+        cumulative_batches = int(context.state["cumulative_batches"]["cumulative_batches"])
     else:
         cumulative_batches = 0
 
@@ -161,14 +159,13 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     if rank == 0:
         log(INFO, f"Assigned {len(shard_assignments)} shards to {world_size} workers: {shard_assignments}")
 
-    # Load model
     model = get_model(config, max_seq_len)
     # Clean state dict keys from `_orig_mod.` prefix (added by torch.compile)
     state_dict = {k.replace("_orig_mod.", ""): v for k, v in msg.content["arrays"].to_torch_state_dict().items()}
     model.load_state_dict(state_dict, strict=True)
     model.to(device)
 
-    # Compile model (Linux + CUDA only)
+    # Compile model
     if sys.platform == "linux" and device.type == "cuda":
         if rank == 0: log(INFO, "Compiling model with torch.compile...")
         model = torch.compile(model, dynamic=False)
@@ -195,14 +192,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
 
     # Training loop
     model.train()
-
-    # Initialize optimizers (Muon + AdamW)
     raw_model = getattr(model, "module", model)
-
-    # Flop estimation
-    num_flops_per_token = raw_model.estimate_flops()
-    promised_flops_per_sec_a100 = 312e12 * world_size
-
     optimizers = raw_model.setup_optimizers(
         unembedding_lr=float(config["unembedding_lr"]) * batch_lr_scale,
         embedding_lr=float(config["embedding_lr"]) * batch_lr_scale,
@@ -212,8 +202,6 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
         scalar_lr=float(config["scalar_lr"]) * batch_lr_scale,
     )
     adamw_optimizer, muon_optimizer = optimizers
-
-    # Per-step scheduling is now handled in the training loop.
 
     # Setup autocast context
     if device.type == "cuda":
@@ -302,8 +290,8 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
                 tok_per_sec = tokens_processed_since_last_log / log_interval_duration
 
                 flops_per_sec = raw_model.estimate_flops() * tok_per_sec
-                mfu = (100 * flops_per_sec / (312e12 * world_size)) if world_size > 0 else 0.0
-                
+                promised_flops_per_sec_a100 = 312e12
+                mfu = (100 * flops_per_sec / (promised_flops_per_sec_a100 * world_size)) if world_size > 0 else 0.0
                 loss_scalar = loss.item() * gradient_accumulation_steps
                 
                 log(
@@ -340,10 +328,8 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
         # Check for stop signal (non-blocking)
         redis_msg = pubsub.get_message(timeout=0)
         if redis_msg and redis_msg["type"] == "message":
-            log(
-                INFO,
-                f"Rank {rank}: Stop signal received ({redis_msg['data'].decode('utf-8')}) after batch {batches_processed}",
-            )
+            if rank == 0:
+                log(INFO, f"🛑 Stop signal received ({redis_msg['data'].decode('utf-8')}) after batch {batches_processed}")
             break
         
         # Break loop if dataloader is exhausted
