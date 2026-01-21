@@ -46,9 +46,11 @@ class Client:
     _state: Literal["OFF", "STARTING", "IDLE", "TRAINING"] = "OFF"
 
     def update_provisioning(self, redis_client: Redis, provisioner: ExlsProvisioner, carbon_intensity: float):
+        # Check whether the client should be provisioned
         if self._state == "OFF" and carbon_intensity < self.provision_threshold:
             self._state = "STARTING"
             provisioner.add_node(self.name)
+        # Check whether the client should be deprovisioned
         elif self._state != "OFF" and carbon_intensity > self.deprovision_threshold:
             threading.Thread(target=self._deprovision, args=(provisioner,)).start()
 
@@ -61,10 +63,14 @@ class Client:
         self._state = "IDLE"
 
     def _deprovision(self, provisioner: ExlsProvisioner):
+        """Gracefully deprovision a client by signaling stop and waiting for completion."""
         redis_client = redis.from_url(self.redis_url)
+        # Wrap up current round in case the client is still training
         if self._state == "TRAINING":
             log(INFO, f"Signaling client '{self.name}' to stop training")
             redis_client.publish(f"{self.name}:stop", f"DEPROVISION {self.name}")
+            
+            # Wait for client to become IDLE (set by train loop after results have been returned)
             wait_start = time.time()
             while self._state == "TRAINING" and (time.time() - wait_start) < 60:
                 time.sleep(1)
@@ -132,19 +138,24 @@ class PilotAvg(Strategy):
             log(INFO, "Waiting for a client to connect")
             time.sleep(1)
 
+        # --- Server-side Scheduling ---
+        # Work on a copy to preserve baseline LRs in base_config
         round_config = dict(base_config)
         total_batch_size = int(round_config["total_batch_size"])
         self.total_batch_size = total_batch_size
         current_step = self.global_tokens_processed // total_batch_size
         
+        # The client will handle per-step scheduling. The server just passes the raw parameters.
         ESTIMATED_TOTAL_TOKENS = 1_000_000_000
         num_iterations = ESTIMATED_TOTAL_TOKENS // total_batch_size
         round_config["num_iterations"] = num_iterations
         log(INFO, f"Round {server_round}: Step {current_step}, Passing scheduling parameters to clients.")
+        # ------------------------------
 
         self._query_clients(grid, flwr_node_ids)
         log(INFO, "configure_train: Training on all %s Flower nodes", len(flwr_node_ids))
 
+        # Get worker assignments from shard manager
         assignments = self.shard_manager.assign_workers(flwr_node_ids)
         progress = self.shard_manager.get_progress_summary()
         log(
@@ -153,6 +164,7 @@ class PilotAvg(Strategy):
             f"{progress['num_complete']}/{progress['num_total']} complete)",
         )
 
+        # Set clients to TRAINING state
         node_id_to_client = {c.flwr_node_id: c for c in self.clients.values() if c.flwr_node_id is not None}
         for flwr_node_id in flwr_node_ids:
             if flwr_node_id in node_id_to_client:

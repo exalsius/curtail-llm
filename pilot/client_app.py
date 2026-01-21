@@ -89,7 +89,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
         frac = min(it / 300, 1)
         return (1 - frac) * 0.85 + frac * 0.95
 
-    # Weight decay
+    # Weight decay is tuned at d12 and its scaling seems to be \propto 1/channels^2
     depth = int(config["n_layer"])
     weight_decay_base = float(config["weight_decay"])
     weight_decay_scaled = weight_decay_base * (12 / depth) ** 2
@@ -114,8 +114,12 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     # Shard assignments
     server_round = config.get("server_round", 0)
     redis_url = context.run_config["redis_url"]
+    
+    # All ranks get the same full list of assignments. The dataloader is responsible
+    # for ensuring each rank processes a unique subset of data *within* each shard.
     shard_assignments = list(zip(config.get("shard_ids", []), config.get("shard_starts", [])))
 
+    # LRs and momentum are now scheduled by the server per round
     global_tokens_processed_start = int(config.get("global_tokens_processed_start", 0))
 
     if rank == 0:
@@ -123,6 +127,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
 
     # Load model
     model = get_model(config, max_seq_len)
+    # Clean state dict keys from `_orig_mod.` prefix (added by torch.compile)
     state_dict = {k.replace("_orig_mod.", ""): v for k, v in msg.content["arrays"].to_torch_state_dict().items()}
     model.load_state_dict(state_dict, strict=True)
     model.to(device)
@@ -147,6 +152,8 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     )
 
     # Setup Redis pubsub for stop signal
+    # IMPORTANT: If a stop signal is published before the client successfully subscribes
+    # to these channels, the signal will be missed by this client.
     pubsub = redis.from_url(redis_url).pubsub()
     pubsub.subscribe(f"round:{server_round}:stop", f"{node_name}:stop")
 
@@ -159,7 +166,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
         unembedding_lr=float(config["unembedding_lr"]) * batch_lr_scale,
         embedding_lr=float(config["embedding_lr"]) * batch_lr_scale,
         matrix_lr=float(config["matrix_lr"]) * batch_lr_scale,
-        weight_decay=weight_decay_scaled,
+        weight_decay=weight_decay_scaled, # Note: this is base decay, per-step is applied later
         adam_betas=(float(config["adam_beta1"]), float(config["adam_beta2"])),
         scalar_lr=float(config["scalar_lr"]) * batch_lr_scale,
     )
@@ -249,11 +256,15 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
 
             step_count = batches_processed // gradient_accumulation_steps
             if rank == 0 and log_interval and step_count % log_interval == 0:
+                # Note: dt here is for the Redis logging interval, not the console log
                 log_interval_duration = time.time() - last_log_time
+                
+                # (logging calculations)
                 tokens_processed_locally = batches_processed * device_batch_size * max_seq_len * world_size
                 total_global_tokens = global_tokens_processed_start + tokens_processed_locally
                 current_step = total_global_tokens // total_batch_size
                 
+                # We calculate tok/sec for redis based on its own interval
                 redis_log_steps = log_interval
                 tokens_processed_since_redis_log = (
                     redis_log_steps * gradient_accumulation_steps * device_batch_size * max_seq_len * world_size
@@ -264,6 +275,8 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
                 mfu = (100 * flops_per_sec / (312e12 * world_size)) if world_size > 0 else 0.0
                 
                 loss_scalar = loss.item() * gradient_accumulation_steps
+                
+                # Console log for a quick pulse-check
                 log(
                     INFO,
                     f"Step {current_step} | Loss: {loss_scalar:.4f} | Tok/sec: {int(tok_per_sec):,} | MFU: {mfu:.2f}% | "
