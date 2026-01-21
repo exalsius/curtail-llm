@@ -101,7 +101,7 @@ torchrun --nproc_per_node=2 scripts/base_train.py ...
 
 ## Conventions
 
-*   **Code Style:** Standard Python conventions.
+*   **Code Style:** Standard Python conventions. Do not use `black` for formatting.
 *   **Logging:** WandB is heavily used. Ensure `WANDB_API_KEY` is set if tracking is enabled.
 *   **Dependencies:** Always use `uv add` or `uv sync` to manage python packages.
 *   **Commit Messages:** 

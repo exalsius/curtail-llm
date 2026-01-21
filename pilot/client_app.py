@@ -23,6 +23,13 @@ from pilot.data import fl_shard_dataloader
 app = ClientApp()
 
 
+def _setup_ddp(rank, world_size, client_id):
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = str(12355 + int(client_id))
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    torch.cuda.set_device(rank)
+    return torch.device(f"cuda:{rank}")
+
 def run_training_process(rank, world_size, msg, context, result_dict, round_start_time):
     client_id = context.node_config.get("partition-id", 0)
     node_name = context.node_config.get("name", f"client_{client_id}")
@@ -31,11 +38,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     experiment_start_time = int(config.get("experiment_start_time", time.time()))
 
     if world_size > 1:
-        os.environ["MASTER_ADDR"] = "localhost"
-        os.environ["MASTER_PORT"] = str(12355 + int(client_id))
-        dist.init_process_group("nccl", rank=rank, world_size=world_size)
-        torch.cuda.set_device(rank)
-        device = torch.device(f"cuda:{rank}")
+        device = _setup_ddp(rank, world_size, client_id)
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -65,17 +68,9 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     device_batch_size = int(config["device_batch_size"])
     max_seq_len = int(config["max_seq_len"])
     total_batch_size = int(config["total_batch_size"])
-
-    matrix_lr = float(config["matrix_lr"])
-    embedding_lr = float(config["embedding_lr"])
-    unembedding_lr = float(config["unembedding_lr"])
-    scalar_lr = float(config["scalar_lr"])
-    weight_decay_base = float(config["weight_decay"])
-    adam_beta1 = float(config["adam_beta1"])
-    adam_beta2 = float(config["adam_beta2"])
-
-    # --- Scheduler ---
     num_iterations = int(config["num_iterations"])
+    
+    # Scheduler parameters
     warmup_ratio = float(config["warmup_ratio"])
     warmdown_ratio = float(config["warmdown_ratio"])
     final_lr_frac = float(config["final_lr_frac"])
@@ -85,24 +80,21 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
         warmdown_iters = round(warmdown_ratio * num_iterations)
         if it < warmup_iters:
             return (it + 1) / warmup_iters
-        elif it <= num_iterations - warmdown_iters:
+        if it <= num_iterations - warmdown_iters:
             return 1.0
-        else:
-            progress = (num_iterations - it) / warmdown_iters
-            return progress * 1.0 + (1 - progress) * final_lr_frac
+        progress = (num_iterations - it) / warmdown_iters
+        return progress * 1.0 + (1 - progress) * final_lr_frac
 
     def get_muon_momentum(it):
         frac = min(it / 300, 1)
         return (1 - frac) * 0.85 + frac * 0.95
 
-    # Weight decay is tuned at d12 and its scaling seems to be \propto 1/channels^2
+    # Weight decay
     depth = int(config["n_layer"])
+    weight_decay_base = float(config["weight_decay"])
     weight_decay_scaled = weight_decay_base * (12 / depth) ** 2
     if depth != 12:
-        log(
-            INFO,
-            f"Scaling weight decay from {weight_decay_base:.6f} to {weight_decay_scaled:.6f} for depth {depth}",
-        )
+        log(INFO, f"Scaling weight decay from {weight_decay_base:.6f} to {weight_decay_scaled:.6f} for depth {depth}")
     def get_weight_decay(it):
         return weight_decay_scaled * (1 - it / num_iterations)
 
@@ -112,52 +104,32 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     batch_ratio = total_batch_size / reference_batch_size
     if batch_ratio != 1.0:
         batch_lr_scale = batch_ratio**0.5
-        log(
-            INFO,
-            f"Scaling LRs by {batch_lr_scale:.4f} for batch size {total_batch_size:,}",
-        )
-    # --- End Scheduler ---
+        log(INFO, f"Scaling LRs by {batch_lr_scale:.4f} for batch size {total_batch_size:,}")
 
-    # Calculate gradient accumulation steps
-    # Note: total_batch_size is global, so we divide by (device_batch_size * world_size)
+    # Gradient accumulation
     tokens_per_fwdbwd = device_batch_size * max_seq_len * world_size
-    assert total_batch_size % tokens_per_fwdbwd == 0
     gradient_accumulation_steps = total_batch_size // tokens_per_fwdbwd
+    assert total_batch_size % tokens_per_fwdbwd == 0
 
+    # Shard assignments
     server_round = config.get("server_round", 0)
-
     redis_url = context.run_config["redis_url"]
-    shard_ids = config.get("shard_ids", [])
-    shard_starts = config.get("shard_starts", [])
-    
-    # Create a single list of assignments for the whole client
-    # All ranks get the same full list of assignments. The dataloader is responsible
-    # for ensuring each rank processes a unique subset of data *within* each shard.
-    shard_assignments = list(zip(shard_ids, shard_starts))
+    shard_assignments = list(zip(config.get("shard_ids", []), config.get("shard_starts", [])))
 
-    # Scheduler Config
-    # LRs and momentum are now scheduled by the server per round
-    muon_momentum = float(config.get("muon_momentum", 0.95))
     global_tokens_processed_start = int(config.get("global_tokens_processed_start", 0))
 
     if rank == 0:
-        log(
-            INFO,
-            f"Assigned {len(shard_assignments)} shards to {world_size} workers: {shard_assignments}",
-        )
+        log(INFO, f"Assigned {len(shard_assignments)} shards to {world_size} workers: {shard_assignments}")
 
     # Load model
     model = get_model(config, max_seq_len)
-    # Clean state dict keys from `_orig_mod.` prefix (added by torch.compile)
-    state_dict = msg.content["arrays"].to_torch_state_dict()
-    state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+    state_dict = {k.replace("_orig_mod.", ""): v for k, v in msg.content["arrays"].to_torch_state_dict().items()}
     model.load_state_dict(state_dict, strict=True)
     model.to(device)
 
-    # Compile model (Linux + CUDA only)
+    # Compile model
     if sys.platform == "linux" and device.type == "cuda":
-        if rank == 0:
-            log(INFO, "Compiling model with torch.compile...")
+        if rank == 0: log(INFO, "Compiling model with torch.compile...")
         model = torch.compile(model, dynamic=False)
     if world_size > 1:
         model = DDP(model, device_ids=[rank])
@@ -175,31 +147,24 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     )
 
     # Setup Redis pubsub for stop signal
-    # IMPORTANT: If a stop signal is published before the client successfully subscribes
-    # to these channels, the signal will be missed by this client.
     pubsub = redis.from_url(redis_url).pubsub()
-    pubsub.subscribe(f"round:{server_round}:stop")
-    pubsub.subscribe(f"{node_name}:stop")
+    pubsub.subscribe(f"round:{server_round}:stop", f"{node_name}:stop")
 
     # Training loop
     model.train()
 
-    # Initialize optimizers (Muon + AdamW)
+    # Optimizers
     raw_model = getattr(model, "module", model)
-
-    # Flop estimation
-    num_flops_per_token = raw_model.estimate_flops()
-    promised_flops_per_sec_a100 = 312e12 * world_size
-
     optimizers = raw_model.setup_optimizers(
-        unembedding_lr=unembedding_lr * batch_lr_scale,
-        embedding_lr=embedding_lr * batch_lr_scale,
-        matrix_lr=matrix_lr * batch_lr_scale,
-        weight_decay=weight_decay_scaled, # Note: this is base decay, per-step is applied later
-        adam_betas=(adam_beta1, adam_beta2),
-        scalar_lr=scalar_lr * batch_lr_scale,
+        unembedding_lr=float(config["unembedding_lr"]) * batch_lr_scale,
+        embedding_lr=float(config["embedding_lr"]) * batch_lr_scale,
+        matrix_lr=float(config["matrix_lr"]) * batch_lr_scale,
+        weight_decay=weight_decay_scaled,
+        adam_betas=(float(config["adam_beta1"]), float(config["adam_beta2"])),
+        scalar_lr=float(config["scalar_lr"]) * batch_lr_scale,
     )
     adamw_optimizer, muon_optimizer = optimizers
+
 
     # Per-step scheduling is now handled in the training loop.
 
@@ -276,68 +241,52 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
                 opt.step()
             model.zero_grad(set_to_none=True)
 
-            step_count = batches_processed // gradient_accumulation_steps
-            # This is the main Redis log, happens per optimizer step
-            if rank == 0 and log_interval and step_count % log_interval == 0:
-                # Note: dt here is for the Redis logging interval, not the console log
-                log_interval_duration = time.time() - last_log_time
+def _log_to_redis(redis_client, log_key, log_entry):
+    redis_client.rpush(log_key, json.dumps(log_entry))
 
-                # (logging calculations)
-                tokens_processed_locally = (
-                    batches_processed * device_batch_size * max_seq_len * world_size
-                )
-                total_global_tokens = (
-                    global_tokens_processed_start + tokens_processed_locally
-                )
+def run_training_process(rank, world_size, msg, context, result_dict, round_start_time):
+    # ... (rest of the function up to the training loop)
+
+            step_count = batches_processed // gradient_accumulation_steps
+            if rank == 0 and log_interval and step_count % log_interval == 0:
+                log_interval_duration = time.time() - last_log_time
+                tokens_processed_locally = batches_processed * device_batch_size * max_seq_len * world_size
+                total_global_tokens = global_tokens_processed_start + tokens_processed_locally
                 current_step = total_global_tokens // total_batch_size
                 
-                # We calculate tok/sec for redis based on its own interval
                 redis_log_steps = log_interval
                 tokens_processed_since_redis_log = (
-                    redis_log_steps
-                    * gradient_accumulation_steps
-                    * device_batch_size
-                    * max_seq_len
-                    * world_size
+                    redis_log_steps * gradient_accumulation_steps * device_batch_size * max_seq_len * world_size
                 )
                 tok_per_sec = tokens_processed_since_redis_log / log_interval_duration
 
-                flops_per_sec = num_flops_per_token * tok_per_sec
-                mfu = (
-                    100 * flops_per_sec / promised_flops_per_sec_a100
-                    if promised_flops_per_sec_a100 > 0
-                    else 0.0
-                )
-
-                eff_unembedding_lr = adamw_optimizer.param_groups[0]["lr"]
-                eff_embedding_lr = adamw_optimizer.param_groups[1]["lr"]
-                eff_scalar_lr = adamw_optimizer.param_groups[3]["lr"]
-                eff_matrix_lr = muon_optimizer.param_groups[0]["lr"]
+                flops_per_sec = raw_model.estimate_flops() * tok_per_sec
+                mfu = (100 * flops_per_sec / (312e12 * world_size)) if world_size > 0 else 0.0
+                
                 loss_scalar = loss.item() * gradient_accumulation_steps
-
-                # Console log for a quick pulse-check
                 log(
                     INFO,
-                    f"Step {current_step} | Loss: {loss_scalar:.4f} | Tok/sec: {int(tok_per_sec):,} | MFU: {mfu:.2f}% | Step duration: {log_interval_duration*1000:.0f}ms | Round duration: {(time.time() - round_start_time):.0f}s",
+                    f"Step {current_step} | Loss: {loss_scalar:.4f} | Tok/sec: {int(tok_per_sec):,} | MFU: {mfu:.2f}% | "
+                    f"Step duration: {log_interval_duration*1000:.0f}ms | Round duration: {(time.time() - round_start_time):.0f}s",
                 )
 
                 log_entry = {
-                    "step": current_step,
-                    "time": int(time.time() - experiment_start_time),
+                    "step": current_step, "time": int(time.time() - experiment_start_time),
                     f"client_{client_id}/train_loss": loss_scalar,
                     f"client_{client_id}/train_ppl": math.exp(loss_scalar),
                     f"client_{client_id}/lr_multiplier": lrm,
-                    f"client_{client_id}/eff_matrix_lr": eff_matrix_lr,
-                    f"client_{client_id}/eff_embedding_lr": eff_embedding_lr,
-                    f"client_{client_id}/eff_unembedding_lr": eff_unembedding_lr,
-                    f"client_{client_id}/eff_scalar_lr": eff_scalar_lr,
+                    f"client_{client_id}/eff_matrix_lr": muon_optimizer.param_groups[0]["lr"],
+                    f"client_{client_id}/eff_embedding_lr": adamw_optimizer.param_groups[1]["lr"],
+                    f"client_{client_id}/eff_unembedding_lr": adamw_optimizer.param_groups[0]["lr"],
+                    f"client_{client_id}/eff_scalar_lr": adamw_optimizer.param_groups[3]["lr"],
                     f"client_{client_id}/momentum": muon_momentum,
                     f"client_{client_id}/weight_decay": muon_weight_decay,
                     f"client_{client_id}/tok_per_sec": tok_per_sec,
                     f"client_{client_id}/mfu": mfu,
                 }
-                redis_client.rpush(log_key, json.dumps(log_entry))
+                _log_to_redis(redis_client, log_key, log_entry)
                 last_log_time = time.time()
+    # ... (rest of the function)
 
         total_loss += loss.item() * gradient_accumulation_steps
 
@@ -367,41 +316,67 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
 
     avg_loss = total_loss / batches_processed if batches_processed > 0 else 0.0
 
-    # Gather shard progress from all ranks if DDP is used
-    if world_size > 1:
-        # Convert local dicts to lists of tuples for gathering
-        local_progress_list = list(shard_progress.items())
-        local_totals_list = list(shard_total_rows.items())
-        
-        # Gather all local lists on rank 0
-        if rank == 0:
-            gathered_progress_lists = [None for _ in range(world_size)]
-            gathered_totals_lists = [None for _ in range(world_size)]
-            dist.gather_object(local_progress_list, gathered_progress_lists, dst=0)
-            dist.gather_object(local_totals_list, gathered_totals_lists, dst=0)
-        else:
-            dist.gather_object(local_progress_list, dst=0)
-            dist.gather_object(local_totals_list, dst=0)
+def _gather_progress(rank, world_size, shard_progress, shard_total_rows):
+    if world_size <= 1:
+        return shard_progress, shard_total_rows
 
-        # On rank 0, combine all gathered items into single dictionaries
-        if rank == 0:
-            global_shard_progress = {}
-            global_shard_totals = {}
-            # Combine progress
-            for progress_list in gathered_progress_lists:
-                for shard_id, current_row in progress_list:
-                    # Update only if this rank's progress is further
-                    if current_row > global_shard_progress.get(shard_id, -1):
-                        global_shard_progress[shard_id] = current_row
-            # Combine totals
-            for totals_list in gathered_totals_lists:
-                global_shard_totals.update(dict(totals_list))
-            
-            shard_progress = global_shard_progress
-            shard_total_rows = global_shard_totals
+    local_progress_list = list(shard_progress.items())
+    local_totals_list = list(shard_total_rows.items())
+    
+    if rank == 0:
+        gathered_progress_lists = [None for _ in range(world_size)]
+        gathered_totals_lists = [None for _ in range(world_size)]
+        dist.gather_object(local_progress_list, gathered_progress_lists, dst=0)
+        dist.gather_object(local_totals_list, gathered_totals_lists, dst=0)
+    else:
+        dist.gather_object(local_progress_list, dst=0)
+        dist.gather_object(local_totals_list, dst=0)
 
-        # Destroy process group after gathering progress
-        dist.destroy_process_group()
+    if rank == 0:
+        global_shard_progress = {}
+        global_shard_totals = {}
+        for progress_list in gathered_progress_lists:
+            for shard_id, current_row in progress_list:
+                if current_row > global_shard_progress.get(shard_id, -1):
+                    global_shard_progress[shard_id] = current_row
+        for totals_list in gathered_totals_lists:
+            global_shard_totals.update(dict(totals_list))
+        return global_shard_progress, global_shard_totals
+    
+    return {}, {}
+
+def _run_ddp(target_fn, world_size, msg, context, round_start_time):
+    manager = mp.Manager()
+    result_dict = manager.dict()
+    mp.spawn(
+        target_fn,
+        args=(world_size, msg, context, result_dict, round_start_time),
+        nprocs=world_size,
+        join=True,
+    )
+    if "message" not in result_dict:
+        raise RuntimeError("Training failed to produce a result message.")
+    return result_dict["message"]
+
+# ... (inside run_training_process)
+    shard_progress, shard_total_rows = _gather_progress(rank, world_size, shard_progress, shard_total_rows)
+
+    if rank == 0:
+        # ... (rest of the logic)
+
+@app.train()
+def train(msg: Message, context: Context):
+    num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    round_start_time = time.time()
+
+    if num_gpus > 1:
+        log(INFO, f"Spawning {num_gpus} processes for DDP training")
+        return _run_ddp(run_training_process, num_gpus, msg, context, round_start_time)
+    
+    result_dict = {}
+    run_training_process(0, 1, msg, context, result_dict, round_start_time)
+    return result_dict["message"]
+
 
     if rank == 0:
         log(INFO, f"Client {client_id}: {batches_processed} batches")
