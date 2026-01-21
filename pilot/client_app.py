@@ -30,6 +30,42 @@ def _setup_ddp(rank, world_size, client_id):
     torch.cuda.set_device(rank)
     return torch.device(f"cuda:{rank}")
 
+
+def _gather_progress(rank, world_size, shard_progress, shard_total_rows):
+    if world_size <= 1:
+        return shard_progress, shard_total_rows
+
+    local_progress_list = list(shard_progress.items())
+    local_totals_list = list(shard_total_rows.items())
+    
+    if rank == 0:
+        gathered_progress_lists = [None for _ in range(world_size)]
+        gathered_totals_lists = [None for _ in range(world_size)]
+        dist.gather_object(local_progress_list, gathered_progress_lists, dst=0)
+        dist.gather_object(local_totals_list, gathered_totals_lists, dst=0)
+    else:
+        dist.gather_object(local_progress_list, dst=0)
+        dist.gather_object(local_totals_list, dst=0)
+
+    if rank == 0:
+        global_shard_progress = {}
+        global_shard_totals = {}
+        for progress_list in gathered_progress_lists:
+            for shard_id, current_row in progress_list:
+                # Update only if this rank's progress is further
+                if current_row > global_shard_progress.get(shard_id, -1):
+                    global_shard_progress[shard_id] = current_row
+        for totals_list in gathered_totals_lists:
+            global_shard_totals.update(dict(totals_list))
+        return global_shard_progress, global_shard_totals
+    
+    return {}, {}
+
+
+def _log_to_redis(redis_client, log_key, log_entry):
+    redis_client.rpush(log_key, json.dumps(log_entry))
+
+
 def run_training_process(rank, world_size, msg, context, result_dict, round_start_time):
     client_id = context.node_config.get("partition-id", 0)
     node_name = context.node_config.get("name", f"client_{client_id}")
@@ -132,7 +168,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     model.load_state_dict(state_dict, strict=True)
     model.to(device)
 
-    # Compile model
+    # Compile model (Linux + CUDA only)
     if sys.platform == "linux" and device.type == "cuda":
         if rank == 0: log(INFO, "Compiling model with torch.compile...")
         model = torch.compile(model, dynamic=False)
@@ -160,8 +196,13 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     # Training loop
     model.train()
 
-    # Optimizers
+    # Initialize optimizers (Muon + AdamW)
     raw_model = getattr(model, "module", model)
+
+    # Flop estimation
+    num_flops_per_token = raw_model.estimate_flops()
+    promised_flops_per_sec_a100 = 312e12 * world_size
+
     optimizers = raw_model.setup_optimizers(
         unembedding_lr=float(config["unembedding_lr"]) * batch_lr_scale,
         embedding_lr=float(config["embedding_lr"]) * batch_lr_scale,
@@ -171,7 +212,6 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
         scalar_lr=float(config["scalar_lr"]) * batch_lr_scale,
     )
     adamw_optimizer, muon_optimizer = optimizers
-
 
     # Per-step scheduling is now handled in the training loop.
 
@@ -248,12 +288,6 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
                 opt.step()
             model.zero_grad(set_to_none=True)
 
-def _log_to_redis(redis_client, log_key, log_entry):
-    redis_client.rpush(log_key, json.dumps(log_entry))
-
-def run_training_process(rank, world_size, msg, context, result_dict, round_start_time):
-    # ... (rest of the function up to the training loop)
-
             step_count = batches_processed // gradient_accumulation_steps
             if rank == 0 and log_interval and step_count % log_interval == 0:
                 # Note: dt here is for the Redis logging interval, not the console log
@@ -284,7 +318,8 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
                 )
 
                 log_entry = {
-                    "step": current_step, "time": int(time.time() - experiment_start_time),
+                    "step": current_step,
+                    "time": int(time.time() - experiment_start_time),
                     f"client_{client_id}/train_loss": loss_scalar,
                     f"client_{client_id}/train_ppl": math.exp(loss_scalar),
                     f"client_{client_id}/lr_multiplier": lrm,
@@ -299,7 +334,6 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
                 }
                 _log_to_redis(redis_client, log_key, log_entry)
                 last_log_time = time.time()
-    # ... (rest of the function)
 
         total_loss += loss.item() * gradient_accumulation_steps
 
@@ -329,67 +363,8 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
 
     avg_loss = total_loss / batches_processed if batches_processed > 0 else 0.0
 
-def _gather_progress(rank, world_size, shard_progress, shard_total_rows):
-    if world_size <= 1:
-        return shard_progress, shard_total_rows
-
-    local_progress_list = list(shard_progress.items())
-    local_totals_list = list(shard_total_rows.items())
-    
-    if rank == 0:
-        gathered_progress_lists = [None for _ in range(world_size)]
-        gathered_totals_lists = [None for _ in range(world_size)]
-        dist.gather_object(local_progress_list, gathered_progress_lists, dst=0)
-        dist.gather_object(local_totals_list, gathered_totals_lists, dst=0)
-    else:
-        dist.gather_object(local_progress_list, dst=0)
-        dist.gather_object(local_totals_list, dst=0)
-
-    if rank == 0:
-        global_shard_progress = {}
-        global_shard_totals = {}
-        for progress_list in gathered_progress_lists:
-            for shard_id, current_row in progress_list:
-                if current_row > global_shard_progress.get(shard_id, -1):
-                    global_shard_progress[shard_id] = current_row
-        for totals_list in gathered_totals_lists:
-            global_shard_totals.update(dict(totals_list))
-        return global_shard_progress, global_shard_totals
-    
-    return {}, {}
-
-def _run_ddp(target_fn, world_size, msg, context, round_start_time):
-    manager = mp.Manager()
-    result_dict = manager.dict()
-    mp.spawn(
-        target_fn,
-        args=(world_size, msg, context, result_dict, round_start_time),
-        nprocs=world_size,
-        join=True,
-    )
-    if "message" not in result_dict:
-        raise RuntimeError("Training failed to produce a result message.")
-    return result_dict["message"]
-
-# ... (inside run_training_process)
+    # Gather shard progress from all ranks if DDP is used
     shard_progress, shard_total_rows = _gather_progress(rank, world_size, shard_progress, shard_total_rows)
-
-    if rank == 0:
-        # ... (rest of the logic)
-
-@app.train()
-def train(msg: Message, context: Context):
-    num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
-    round_start_time = time.time()
-
-    if num_gpus > 1:
-        log(INFO, f"Spawning {num_gpus} processes for DDP training")
-        return _run_ddp(run_training_process, num_gpus, msg, context, round_start_time)
-    
-    result_dict = {}
-    run_training_process(0, 1, msg, context, result_dict, round_start_time)
-    return result_dict["message"]
-
 
     if rank == 0:
         log(INFO, f"Client {client_id}: {batches_processed} batches")
@@ -438,6 +413,20 @@ def train(msg: Message, context: Context):
         )
 
 
+def _run_ddp(target_fn, world_size, msg, context, round_start_time):
+    manager = mp.Manager()
+    result_dict = manager.dict()
+    mp.spawn(
+        target_fn,
+        args=(world_size, msg, context, result_dict, round_start_time),
+        nprocs=world_size,
+        join=True,
+    )
+    if "message" not in result_dict:
+        raise RuntimeError("Training failed to produce a result message.")
+    return result_dict["message"]
+
+
 @app.train()
 def train(msg: Message, context: Context):
     # Detect available GPUs
@@ -449,18 +438,7 @@ def train(msg: Message, context: Context):
     round_start_time = time.time()
     if num_gpus > 1:
         log(INFO, f"Spawning {num_gpus} processes for DDP training")
-        manager = mp.Manager()
-        result_dict = manager.dict()
-        mp.spawn(
-            run_training_process,
-            args=(num_gpus, msg, context, result_dict, round_start_time),
-            nprocs=num_gpus,
-            join=True,
-        )
-        if "message" in result_dict:
-            return result_dict["message"]
-        else:
-            raise RuntimeError("Training failed to produce a result message.")
+        return _run_ddp(run_training_process, num_gpus, msg, context, round_start_time)
     else:
         # Run single process
         # Use a dummy dict to capture result
