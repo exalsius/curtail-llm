@@ -243,11 +243,21 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
 
         loss.backward()
 
+        # Capture state of the batch we just finished before prefetching overwrites it
+        prev_shard_id = shard_id
+        prev_total_rows = total_rows
+
         # Prefetch the next batch while the GPU is busy
         try:
             inputs, targets, shard_id, current_row, total_rows = next(iterator)
         except StopIteration:
             iterator = None # Mark as exhausted to exit loop
+
+        # If the shard ID changed, it means the previous shard is fully consumed.
+        # We explicitly mark it as complete (max rows) to prevent "stuck at 99%" issues.
+        if iterator and shard_id != prev_shard_id:
+            shard_progress[prev_shard_id] = prev_total_rows
+            shard_total_rows[prev_shard_id] = prev_total_rows
 
         batches_processed += 1
 
