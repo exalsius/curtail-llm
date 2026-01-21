@@ -56,13 +56,19 @@ class ShardManager:
 
         if not incomplete_shards:
             # All shards complete, return empty assignments
-            return {flwr_node_id: {"shard_ids": [], "shard_starts": []} for flwr_node_id in flwr_node_ids}
+            return {
+                flwr_node_id: {"shard_ids": [], "shard_starts": []}
+                for flwr_node_id in flwr_node_ids
+            }
 
         # Sort by processed_rows ascending (in-progress first)
         incomplete_shards.sort(key=lambda x: x[1], reverse=True)
 
         # Distribute shards evenly among workers (round-robin) in gRPC format
-        assignments = {flwr_node_id: {"shard_ids": [], "shard_starts": []} for flwr_node_id in flwr_node_ids}
+        assignments = {
+            flwr_node_id: {"shard_ids": [], "shard_starts": []}
+            for flwr_node_id in flwr_node_ids
+        }
         for i, (shard_id, start_row) in enumerate(incomplete_shards):
             flwr_node_id = flwr_node_ids[i % len(flwr_node_ids)]
             assignments[flwr_node_id]["shard_ids"].append(shard_id)
@@ -115,18 +121,33 @@ class ShardManager:
             "total_rows": total_rows,
             "processed_rows": processed_rows,
             "progress": processed_rows / total_rows if total_rows > 0 else 0,
-            "num_complete": sum(1 for s in self.shard_states.values() if s["processed_rows"] >= s["total_rows"]),
+            "num_complete": sum(
+                1
+                for s in self.shard_states.values()
+                if s["processed_rows"] >= s["total_rows"]
+            ),
             "num_total": self.num_shards,
         }
 
     def __repr__(self):
         summary = self.get_progress_summary()
-        return (f"ShardManager(num_shards={self.num_shards}, "
-                f"progress={summary['progress']:.1%}, "
-                f"complete={summary['num_complete']}/{summary['num_total']})")
+        return (
+            f"ShardManager(num_shards={self.num_shards}, "
+            f"progress={summary['progress']:.1%}, "
+            f"complete={summary['num_complete']}/{summary['num_total']})"
+        )
 
 
-def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_batch_size=128, device="cuda", rank=0, world_size=1):
+def fl_shard_dataloader(
+    shard_assignments,
+    B,
+    T,
+    tokenizer_threads=4,
+    tokenizer_batch_size=128,
+    device="cuda",
+    rank=0,
+    world_size=1,
+):
     """Process multiple parquet shards sequentially for FL training.
 
     This implementation is inspired by nanochat's `tokenizing_distributed_data_loader_with_state`
@@ -171,52 +192,75 @@ def fl_shard_dataloader(shard_assignments, B, T, tokenizer_threads=4, tokenizer_
                 start_rg_idx = i
                 break
             cumulative_rows += rg_rows
-        
+
         # Each rank starts processing from a different row group offset
-        rg_idx = start_rg_idx + rank
-        
+        rg_idx = start_rg_idx
+
         if rank == 0:
-            log(INFO, f"Processing shard {shard_id} starting at row {start_row}/{total_rows}")")
+            log(
+                INFO,
+                f"Processing shard {shard_id} starting at row {start_row}/{total_rows}",
+            )
 
+        # In DDP, each rank will process all row groups but skip rows based on rank
+        current_row = start_row - 1  # Start before the first row we care about
         while rg_idx < pf.num_row_groups:
-            rg = pf.read_row_group(rg_idx)
-            # This is the starting row number of the current row group
-            rg_start_row = sum(pf.metadata.row_group(i).num_rows for i in range(rg_idx))
+            # Only process this row group if it's our turn
+            if (rg_idx - start_rg_idx) % world_size == rank:
+                rg = pf.read_row_group(rg_idx)
+                texts = rg.column("text").to_pylist()
 
-            texts = rg.column('text').to_pylist()
-            
-            # If this is the first row group, we need to skip rows to get to the actual start_row
-            if rg_idx == start_rg_idx:
-                row_offset = start_row - rg_start_row
-                texts = texts[row_offset:]
-            else:
-                row_offset = 0
+                # If this is the first row group for this rank, skip to the start_row
+                if rg_idx == start_rg_idx:
+                    row_offset = start_row - cumulative_rows
+                    texts = texts[row_offset:]
+                else:
+                    row_offset = 0
 
-            # Process texts in smaller batches for tokenization
-            for i in range(0, len(texts), tokenizer_batch_size):
-                batch = texts[i:i + tokenizer_batch_size]
-                token_lists = tokenizer.encode(batch, prepend=bos_token, num_threads=tokenizer_threads)
+                # Process texts in smaller batches for tokenization
+                for i in range(0, len(texts), tokenizer_batch_size):
+                    batch = texts[i : i + tokenizer_batch_size]
+                    token_lists = tokenizer.encode(
+                        batch, prepend=bos_token, num_threads=tokenizer_threads
+                    )
 
-                for j, tokens in enumerate(token_lists):
-                    token_buffer.extend(tokens)
-                    
-                    # Calculate the absolute row index within the shard
-                    current_row = rg_start_row + row_offset + i + j
+                    for j, tokens in enumerate(token_lists):
+                        token_buffer.extend(tokens)
 
-                    # Yield batches as they become available
-                    while len(token_buffer) >= needed_tokens:
-                        tokens_list = [token_buffer.popleft() for _ in range(needed_tokens)]
-                        use_cuda = "cuda" in device
-                        scratch = torch.tensor(tokens_list, dtype=torch.long, pin_memory=use_cuda)
-                        
-                        inputs = scratch[:-1].view(B, T).to(device=device, non_blocking=use_cuda)
-                        targets = scratch[1:].view(B, T).to(device=device, non_blocking=use_cuda)
-                        
-                        yield inputs, targets, shard_id, current_row, total_rows
-            
-            rg_idx += world_size # Move to the next row group for this rank
+                        # Correctly calculate the absolute row index
+                        current_row = cumulative_rows + row_offset + i + j
+
+                        # Yield batches as they become available
+                        while len(token_buffer) >= needed_tokens:
+                            tokens_list = [
+                                token_buffer.popleft() for _ in range(needed_tokens)
+                            ]
+                            use_cuda = "cuda" in device
+                            scratch = torch.tensor(
+                                tokens_list, dtype=torch.long, pin_memory=use_cuda
+                            )
+
+                            inputs = (
+                                scratch[:-1]
+                                .view(B, T)
+                                .to(device=device, non_blocking=use_cuda)
+                            )
+                            targets = (
+                                scratch[1:]
+                                .view(B, T)
+                                .to(device=device, non_blocking=use_cuda)
+                            )
+
+                            yield inputs, targets, shard_id, current_row, total_rows
+
+            # Update cumulative_rows for the next iteration
+            cumulative_rows += pf.metadata.row_group(rg_idx).num_rows
+            rg_idx += 1
 
         # Clear buffer between shards to prevent data leakage
         if token_buffer:
-            log(INFO, f"Rank {rank}: Discarding {len(token_buffer)} tokens from shard {shard_id}")
+            log(
+                INFO,
+                f"Rank {rank}: Discarding {len(token_buffer)} tokens from shard {shard_id}",
+            )
             token_buffer.clear()
