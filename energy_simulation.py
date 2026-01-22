@@ -1,19 +1,21 @@
-from datetime import datetime
-
+import pandas as pd
 import vessim as vs
+
+SIM_START = pd.to_datetime("2026-01-11 17:00:00+00:00")
 
 
 def main():
     """Run an interactive real-time simulation with multiple microgrids."""
-    clients_and_location = [
-        ("hyperstack", (52.5200, 13.4050)),
-        ("amd", (18.9582, 72.8311)),
+    clients = [
+        ("client_0", "CAISO_NORTH"),
+        ("client_1", "SPP_TX"),
+        ("client_2", "NEM_SA"),
     ]
 
-    sim_start = datetime.now()
-    environment = vs.Environment(sim_start=sim_start, step_size=10)
+    environment = vs.Environment(sim_start=SIM_START, step_size=10)
+    mci_data = pd.read_csv("mci.csv", index_col="point_time", parse_dates=True)
 
-    for i, (client_name, location) in enumerate(clients_and_location):
+    for client_name, mci_region in clients:
         environment.add_microgrid(
             name=client_name,
             actors=[
@@ -24,25 +26,12 @@ def main():
                 #    username="admin",
                 #    password="zponvkk0HC4oi5Kn1bvI"
                 # )),
-                # vs.Actor(name="solar", signal=vs.Trace.load(
-                #     dataset="solcast2022_global",
-                #     column=client_name,
-                #     params={"scale": 200, "start_time": sim_start}
-                # ))
             ],
-            # storage= vs.SimpleBattery(
-            #     capacity=10 * i,
-            #     initial_soc=0.6  # Start at 60% charge
-            # ),
-            grid_signals={"mci_index": vs.WatttimeSignal(
-                username="logsight",
-                password="f%ynjSpa8P5$5W",
-                location=location,
-            )},
+            grid_signals={"carbon_intensity": vs.Trace(mci_data, column=mci_region)},
         )
 
     environment.add_controller(vs.CsvLogger(outfile="results/experiment1.csv"))
-    environment.add_controller(vs.Api(export_prometheus=True))
+    environment.add_controller(vs.Api(export_prometheus=True, broker_port=8700))
 
     environment.run(until=3600*24, rt_factor=1, behind_threshold=5)
 
