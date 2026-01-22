@@ -146,9 +146,8 @@ class PilotAvg(Strategy):
         current_step = self.global_tokens_processed // total_batch_size
         
         # The client will handle per-step scheduling. The server just passes the raw parameters.
-        ESTIMATED_TOTAL_TOKENS = 1_000_000_000
-        num_iterations = ESTIMATED_TOTAL_TOKENS // total_batch_size
-        round_config["num_iterations"] = num_iterations
+        # num_iterations is already in base_config, derived from num_shards in server_app.py
+        
         log(INFO, f"Round {server_round}: Step {current_step}, Passing scheduling parameters to clients.")
         # ------------------------------
 

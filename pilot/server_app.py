@@ -90,6 +90,13 @@ def main(grid: Grid, context: Context) -> None:
     if depth != 12:
         log(INFO, f"Scaling weight decay from {weight_decay_base:.6f} to {weight_decay_scaled:.6f} for depth {depth}")
 
+    # Calculate num_iterations based on dataset size
+    # Estimate total tokens assuming full rows
+    rows_per_shard = 53248 # Approximate typical size
+    total_tokens_est = num_shards * rows_per_shard * max_seq_len
+    num_iterations = total_tokens_est // total_batch_size
+    log(INFO, f"Calculated num_iterations: {num_iterations} (from {num_shards} shards)")
+
     # Extract scheduler config
     train_config_dict = {
         "matrix_lr": float(context.run_config["matrix_lr"]),
@@ -99,7 +106,7 @@ def main(grid: Grid, context: Context) -> None:
         "weight_decay": float(context.run_config["weight_decay"]),
         "adam_beta1": float(context.run_config["adam_beta1"]),
         "adam_beta2": float(context.run_config["adam_beta2"]),
-        "num_iterations": int(context.run_config["num_iterations"]),
+        "num_iterations": num_iterations,
         "warmup_ratio": float(context.run_config["warmup_ratio"]),
         "warmdown_ratio": float(context.run_config["warmdown_ratio"]),
         "final_lr_frac": float(context.run_config["final_lr_frac"]),

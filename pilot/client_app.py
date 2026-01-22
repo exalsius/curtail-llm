@@ -183,7 +183,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
         unembedding_lr=float(config["unembedding_lr"]) * float(config["batch_lr_scale"]),
         embedding_lr=float(config["embedding_lr"]) * float(config["batch_lr_scale"]),
         matrix_lr=float(config["matrix_lr"]) * float(config["batch_lr_scale"]),
-        weight_decay=weight_decay_scaled, # Note: this is base decay, per-step is applied later
+        weight_decay=float(config["weight_decay_scaled"]), # Note: this is base decay, per-step is applied later
         adam_betas=(float(config["adam_beta1"]), float(config["adam_beta2"])),
         scalar_lr=float(config["scalar_lr"]) * float(config["batch_lr_scale"]),
     )
@@ -220,9 +220,6 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
 
     while iterator:
         # Note: 'inputs' and 'targets' are from the *previous* iteration's prefetch
-        inputs = inputs.to(device)
-        targets = targets.to(device)
-
         with autocast_ctx:
             loss = model(inputs, targets=targets)
             loss = loss / gradient_accumulation_steps
@@ -288,6 +285,8 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
                 flops_per_sec = raw_model.estimate_flops() * tok_per_sec
                 promised_flops_per_sec_a100 = 312e12
                 mfu = (100 * flops_per_sec / (promised_flops_per_sec_a100 * world_size)) if world_size > 0 else 0.0
+                
+                # Only call .item() when we are actually logging
                 loss_scalar = loss.item() * gradient_accumulation_steps
                 
                 log(
@@ -322,8 +321,6 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
                     log(INFO, f"🛑 Stop signal received ({redis_msg['data'].decode('utf-8')}) after batch {batches_processed}")
                 break
 
-        total_loss += loss.item() * gradient_accumulation_steps
-
         # Track progress
         shard_progress[shard_id] = current_row
         shard_total_rows[shard_id] = total_rows
@@ -339,7 +336,9 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
             opt.step()
         model.zero_grad(set_to_none=True)
 
-    avg_loss = total_loss / batches_processed if batches_processed > 0 else 0.0
+    # Note: total_loss was used for avg_loss which isn't really used for much besides reporting back to server.
+    # We can just use the last loss or 0 if we want to avoid all syncs, or just sync once here at the end.
+    avg_loss = loss.item() * gradient_accumulation_steps if batches_processed > 0 else 0.0
 
     # Gather shard progress from all ranks if DDP is used
     shard_progress, shard_total_rows = _gather_progress(rank, world_size, shard_progress, shard_total_rows)
