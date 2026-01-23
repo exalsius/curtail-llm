@@ -199,6 +199,8 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
 
     total_loss = 0.0
     batches_processed = 0
+    smooth_train_loss = 0.0
+    ema_beta = 0.9
     shard_progress = {}  # Tracks absolute current_row
     shard_total_rows = {} # Tracks total_rows per shard
     log_interval = context.run_config["log_interval"]
@@ -267,9 +269,16 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
 
             for opt in optimizers:
                 opt.step()
-            model.zero_grad(set_to_none=True)
+            model.zero_grad(set_to_none=True);
 
             step_count = batches_processed // gradient_accumulation_steps
+            local_steps_done = step_count - 1
+            
+            # EMA Smoothing
+            loss_scalar = loss.item() * gradient_accumulation_steps
+            smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * loss_scalar
+            debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(local_steps_done + 1))
+
             if rank == 0 and log_interval and step_count % log_interval == 0:
                 log_interval_duration = time.time() - last_log_time
                 
@@ -286,26 +295,19 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
                 promised_flops_per_sec_a100 = 312e12
                 mfu = (100 * flops_per_sec / (promised_flops_per_sec_a100 * world_size)) if world_size > 0 else 0.0
                 
-                # Only call .item() when we are actually logging
-                loss_scalar = loss.item() * gradient_accumulation_steps
-                
                 log(
                     INFO,
-                    f"Step {current_step} ({log_interval_duration*1000:.0f}ms) | Shard: {shard_id} (row {current_row}/{total_rows}) | "
-                    f"Loss: {loss_scalar:.4f} | Tok/sec: {int(tok_per_sec):,} | MFU: {mfu:.2f}% | "
+                    f"Step {current_step} ({log_interval_duration:.2f}s) | Shard: {shard_id} (row {current_row}/{total_rows}) | "
+                    f"lrm: {lrm} | Loss: {debiased_smooth_loss:.4f} | Tok/sec: {int(tok_per_sec):,} | MFU: {mfu:.2f}% | "
                     f"Round duration: {(time.time() - round_start_time):.0f}s",
                 )
 
                 log_entry = {
                     "step": current_step,
                     "time": int(time.time() - experiment_start_time),
-                    f"client_{client_id}/train_loss": loss_scalar,
-                    f"client_{client_id}/train_ppl": math.exp(loss_scalar),
-                    f"client_{client_id}/lr_multiplier": lrm,
-                    f"client_{client_id}/eff_matrix_lr": muon_optimizer.param_groups[0]["lr"],
-                    f"client_{client_id}/eff_embedding_lr": adamw_optimizer.param_groups[1]["lr"],
-                    f"client_{client_id}/eff_unembedding_lr": adamw_optimizer.param_groups[0]["lr"],
-                    f"client_{client_id}/eff_scalar_lr": adamw_optimizer.param_groups[3]["lr"],
+                    f"client_{client_id}/train_loss": debiased_smooth_loss,
+                    f"client_{client_id}/train_ppl": math.exp(debiased_smooth_loss),
+                    f"client_{client_id}/lrm": lrm,
                     f"client_{client_id}/momentum": muon_momentum,
                     f"client_{client_id}/weight_decay": muon_weight_decay,
                     f"client_{client_id}/tok_per_sec": tok_per_sec,

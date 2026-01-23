@@ -39,7 +39,7 @@ flash_attn = None
 @dataclass
 class GPTConfig:
     sequence_len: int = 1024
-    vocab_size: int = 50304
+    vocab_size: int = 65536
     n_layer: int = 12
     n_head: int = 6 # number of query heads
     n_kv_head: int = 6 # number of key/value heads (GQA)

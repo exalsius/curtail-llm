@@ -31,6 +31,7 @@ def main(grid: Grid, context: Context) -> None:
 
     # Initialize wandb
     wandb_project: str = context.run_config["wandb_project"]
+    num_iterations: int = context.run_config["num_iterations"]
 
     # Create run name with hyperparameters
     run_name = f"bs{device_batch_size},tbs{total_batch_size},seq{max_seq_len}"
@@ -89,13 +90,6 @@ def main(grid: Grid, context: Context) -> None:
     weight_decay_scaled = weight_decay_base * (12 / depth) ** 2
     if depth != 12:
         log(INFO, f"Scaling weight decay from {weight_decay_base:.6f} to {weight_decay_scaled:.6f} for depth {depth}")
-
-    # Calculate num_iterations based on dataset size
-    # Estimate total tokens assuming full rows
-    rows_per_shard = 53248 # Approximate typical size
-    total_tokens_est = num_shards * rows_per_shard * max_seq_len
-    num_iterations = total_tokens_est // total_batch_size
-    log(INFO, f"Calculated num_iterations: {num_iterations} (from {num_shards} shards)")
 
     # Extract scheduler config
     train_config_dict = {
