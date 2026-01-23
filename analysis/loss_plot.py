@@ -76,7 +76,7 @@ def _(centralized_df, centralized_loss_col, pilot_df, plt):
 
     # Plot Pilot Baseline (Smoothed)
     ax.plot(
-        pilot_df["time"] * 0.85, 
+        pilot_df["time"], 
         pilot_df["smoothed_loss"], 
         label="Pilot Baseline (Smoothed)",
         linestyle='-',
@@ -85,6 +85,7 @@ def _(centralized_df, centralized_loss_col, pilot_df, plt):
 
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Training Loss")
+    ax.set_ylim(2.6, 3.8)
     ax.set_title("Final Loss Comparison (Time Domain)")
     ax.legend()
     ax.grid(True, linestyle='--', alpha=0.6)
