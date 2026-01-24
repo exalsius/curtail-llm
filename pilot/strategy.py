@@ -120,7 +120,7 @@ class PilotAvg(Strategy):
     def _query_clients(self, grid: Grid, flwr_node_ids: list[FlwrNodeId]):
         log(INFO, f"Querying all {len(flwr_node_ids)} connected Flower nodes for their names...")
         messages = [
-            Message(content=RecordDict({"config": ConfigRecord({})}), message_type=MessageType.QUERY, dst_node_id=flwr_node_id)
+            Message(content=RecordDict({"config": ConfigRecord({})}), message_type=MessageType.QUERY, dst_node_id=flwr_node_id, ttl=86400 * 7)
             for flwr_node_id in flwr_node_ids
         ]
         query_replies = grid.send_and_receive(messages=messages, timeout=10)
@@ -184,6 +184,7 @@ class PilotAvg(Strategy):
                 content=RecordDict({"arrays": arrays, "config": ConfigRecord({**round_config, **assignments[flwr_node_id]})}),
                 message_type=MessageType.TRAIN,
                 dst_node_id=flwr_node_id,
+                ttl=86400 * 7,  # 7 days - prevents 12h timeout from Flower's DEFAULT_TTL
             )
             for flwr_node_id in flwr_node_ids
         ]
