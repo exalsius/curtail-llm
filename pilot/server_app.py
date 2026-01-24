@@ -25,7 +25,7 @@ def main(grid: Grid, context: Context) -> None:
 
     debug_port_server: int = context.run_config.get("debug_port_server", None)
     if debug_port_server:
-        print("[Server] Debug mode enabled...")
+        log(INFO, "Debug mode enabled")
         import pydevd_pycharm
         pydevd_pycharm.settrace('localhost', port=debug_port_server, stdout_to_server=True, stderr_to_server=True)
 

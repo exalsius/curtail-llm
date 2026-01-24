@@ -55,11 +55,11 @@ class Client:
             threading.Thread(target=self._deprovision, args=(provisioner,)).start()
 
     def start_training(self):
-        assert self._state == "IDLE", f"Cannot start training: client '{self.name}' is {self._state}"
+        assert self._state == "IDLE"
         self._state = "TRAINING"
 
     def stop_training(self):
-        assert self._state == "TRAINING", f"Cannot stop training: client '{self.name}' is {self._state}"
+        assert self._state == "TRAINING"
         self._state = "IDLE"
 
     def _deprovision(self, provisioner: ExlsProvisioner):
@@ -110,6 +110,7 @@ class PilotAvg(Strategy):
         self.shard_manager = ShardManager(num_shards=num_shards)
         self.weighted_by_key = "batches_processed"
         self.global_tokens_processed = 0
+        self._node_id_to_client: dict[FlwrNodeId, Client] = {}
 
 
     def summary(self) -> None:
@@ -127,8 +128,10 @@ class PilotAvg(Strategy):
         for reply in query_replies:
             client_name = reply.content["config"]["name"]
             log(INFO, f" - Flower node {reply.metadata.src_node_id}: '{client_name}'")
-            self.clients[client_name]._state = "IDLE"
-            self.clients[client_name]._flwr_node_id = reply.metadata.src_node_id
+            client = self.clients[client_name]
+            client._state = "IDLE"
+            client._flwr_node_id = reply.metadata.src_node_id
+            self._node_id_to_client[reply.metadata.src_node_id] = client
 
     def configure_train(
         self, server_round: int, arrays: ArrayRecord, base_config: ConfigRecord, grid: Grid
@@ -163,11 +166,9 @@ class PilotAvg(Strategy):
             f"{progress['num_complete']}/{progress['num_total']} complete)",
         )
 
-        # Set clients to TRAINING state
-        node_id_to_client = {c.flwr_node_id: c for c in self.clients.values() if c.flwr_node_id is not None}
         for flwr_node_id in flwr_node_ids:
-            if flwr_node_id in node_id_to_client:
-                node_id_to_client[flwr_node_id].start_training()
+            if flwr_node_id in self._node_id_to_client:
+                self._node_id_to_client[flwr_node_id].start_training()
 
         round_config.update({
             "server_round": server_round,
@@ -223,12 +224,11 @@ class PilotAvg(Strategy):
     ) -> tuple[Optional[ArrayRecord], Optional[MetricRecord]]:
         """Aggregate ArrayRecords and MetricRecords in the received Messages."""
         valid_replies, _ = self._check_and_log_replies(replies)
-        node_id_to_client = {c.flwr_node_id: c for c in self.clients.values() if c.flwr_node_id is not None}
         arrays, metrics = None, None
         if valid_replies:
             for reply in valid_replies:
-                if reply.metadata.src_node_id in node_id_to_client:
-                    node_id_to_client[reply.metadata.src_node_id].stop_training()
+                if reply.metadata.src_node_id in self._node_id_to_client:
+                    self._node_id_to_client[reply.metadata.src_node_id].stop_training()
                 
                 reply_metrics = reply.content["metrics"]
                 self.shard_manager.update(
