@@ -13,7 +13,7 @@ from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
 import pyarrow.parquet as pq
 from flwr.common import ConfigRecord, log
-from torch.nn.parallel import DistributedDataParallel as DDP
+# DDP not used - optimizers handle gradient sync internally
 
 from nanochat.common import get_base_dir
 from pilot.model import get_model
@@ -155,8 +155,9 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     if sys.platform == "linux" and device.type == "cuda":
         if rank == 0: log(INFO, "Compiling model with torch.compile...")
         model = torch.compile(model, dynamic=False)
-    if world_size > 1:
-        model = DDP(model, device_ids=[rank])
+    # Note: We don't use DDP wrapper because the optimizers (Muon, AdamW) have
+    # built-in gradient synchronization via reduce_scatter/all_reduce.
+    # Using DDP would cause double gradient sync and slow down training.
 
     # Create dataloader
     trainloader = fl_shard_dataloader(
@@ -201,6 +202,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     batches_processed = 0
     smooth_train_loss = 0.0
     ema_beta = 0.9
+    ema_updates = 0
     shard_progress = {}  # Tracks absolute current_row
     shard_total_rows = {} # Tracks total_rows per shard
     log_interval = context.run_config["log_interval"]
@@ -274,14 +276,15 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
             step_count = batches_processed // gradient_accumulation_steps
             local_steps_done = step_count - 1
             
-            # EMA Smoothing
-            loss_scalar = loss.item() * gradient_accumulation_steps
-            smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * loss_scalar
-            debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(local_steps_done + 1))
-
             if rank == 0 and log_interval and step_count % log_interval == 0:
                 log_interval_duration = time.time() - last_log_time
                 
+                # EMA Smoothing (only on logged steps to avoid sync overhead)
+                loss_scalar = loss.item() * gradient_accumulation_steps
+                smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * loss_scalar
+                ema_updates += 1
+                debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**ema_updates)
+
                 tokens_processed_locally = batches_processed * device_batch_size * max_seq_len * world_size
                 total_global_tokens = global_tokens_processed_start + tokens_processed_locally
                 current_step = total_global_tokens // total_batch_size
@@ -297,8 +300,8 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
                 
                 log(
                     INFO,
-                    f"Step {current_step} ({log_interval_duration:.2f}s) | Shard: {shard_id} (row {current_row}/{total_rows}) | "
-                    f"lrm: {lrm} | Loss: {debiased_smooth_loss:.4f} | Tok/sec: {int(tok_per_sec):,} | MFU: {mfu:.2f}% | "
+                    f"Step {current_step} ({log_interval_duration*1000:.0f}ms) | Shard: {shard_id} (row {current_row}/{total_rows}) | "
+                    f"Loss: {debiased_smooth_loss:.4f} | Tok/sec: {int(tok_per_sec):,} | MFU: {mfu:.2f}% | "
                     f"Round duration: {(time.time() - round_start_time):.0f}s",
                 )
 
