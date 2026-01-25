@@ -93,7 +93,7 @@ scalar_lr = 0.5
 device_batch_size = 8
 max_seq_len = 2048
 total_batch_size = 524288  # Matches nanochat d20 default (524k tokens)
-num_iterations = 21400 # ~11.2B tokens / 524k batch size
+num_iterations = 30000 # Match baseline schedule (warmdown starts ~24k)
 
 # Scheduling
 weight_decay = 0.2

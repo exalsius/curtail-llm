@@ -42,43 +42,27 @@ def _(centralized_df, pilot_df):
 
     # Identify Centralized loss column
     centralized_loss_col = "baseline - train/loss"
-
-    # Define smoothing function (same as base_train.py)
-    def calculate_smoothed_loss(series, beta=0.9):
-        smoothed_values = []
-        smooth_loss = 0
-        for i, loss in enumerate(series):
-            # If it's the first step, initialize with the first value (common practice)
-            # base_train.py initializes smooth_loss=0, but let's stick to its formula exactly:
-            # smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss.item()
-            smooth_loss = beta * smooth_loss + (1 - beta) * loss
-            debiased_loss = smooth_loss / (1 - beta**(i + 1))
-            smoothed_values.append(debiased_loss)
-        return smoothed_values
-
-    # Apply smoothing to Pilot loss
-    pilot_df["smoothed_loss"] = calculate_smoothed_loss(pilot_df[pilot_loss_col])
-    return (centralized_loss_col,)
+    return centralized_loss_col, pilot_loss_col
 
 
 @app.cell
-def _(centralized_df, centralized_loss_col, pilot_df, plt):
+def _(centralized_df, centralized_loss_col, pilot_df, pilot_loss_col, plt):
     fig, ax = plt.subplots(figsize=(10, 6))
 
     # Plot Centralized Baseline
     ax.plot(
-        centralized_df["total_training_time"], 
-        centralized_df[centralized_loss_col], 
+        centralized_df["total_training_time"],
+        centralized_df[centralized_loss_col],
         label="Centralized Baseline",
         linestyle='-',
         alpha=0.7
     )
 
-    # Plot Pilot Baseline (Smoothed)
+    # Plot Pilot Baseline
     ax.plot(
-        pilot_df["time"], 
-        pilot_df["smoothed_loss"], 
-        label="Pilot Baseline (Smoothed)",
+        pilot_df["time"],
+        pilot_df[pilot_loss_col],
+        label="Pilot Baseline",
         linestyle='-',
         alpha=0.7
     )

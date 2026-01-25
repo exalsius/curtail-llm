@@ -30,20 +30,12 @@
       "problemMatcher": []
     },
     {
-      "label": "gemini",
-      "type": "shell",
-      "command": "gemini",
-      "presentation": { "reveal": "always", "panel": "new" },
-      "problemMatcher": []
-    },
-    {
-      "label": "term: all (5 terminals)",
+      "label": "term: all (4 terminals)",
       "dependsOn": [
         "superlink",
         "client_0",
         "client_1",
-        "bash",
-        "gemini"
+        "bash"
       ],
       "problemMatcher": []
     }

@@ -173,9 +173,6 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
         autocast_ctx = nullcontext()
 
     batches_processed = 0
-    smooth_train_loss = 0.0
-    ema_beta = 0.9
-    ema_updates = 0
     shard_progress = {}  # Tracks absolute current_row
     shard_total_rows = {} # Tracks total_rows per shard
     log_interval = context.run_config["log_interval"]
@@ -241,14 +238,11 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
             if rank == 0 and log_interval and step_count % log_interval == 0:
                 log_interval_duration = time.time() - last_log_time
                 loss_scalar = loss.item() * gradient_accumulation_steps
-                smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * loss_scalar
-                ema_updates += 1
-                debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**ema_updates)
 
                 tokens_processed_locally = batches_processed * device_batch_size * max_seq_len * world_size
                 total_global_tokens = global_tokens_processed_start + tokens_processed_locally
                 current_step = total_global_tokens // total_batch_size
-                
+
                 tokens_processed_since_last_log = (
                     log_interval * gradient_accumulation_steps * device_batch_size * max_seq_len * world_size
                 )
@@ -257,19 +251,19 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
                 flops_per_sec = raw_model.estimate_flops() * tok_per_sec
                 promised_flops_per_sec_a100 = 312e12
                 mfu = (100 * flops_per_sec / (promised_flops_per_sec_a100 * world_size)) if world_size > 0 else 0.0
-                
+
                 log(
                     INFO,
                     f"Step {current_step} ({log_interval_duration*1000:.0f}ms) | Shard: {shard_id} (row {current_row}/{total_rows}) | "
-                    f"Loss: {debiased_smooth_loss:.4f} | Tok/sec: {int(tok_per_sec):,} | MFU: {mfu:.2f}% | "
+                    f"Loss: {loss_scalar:.4f} | Tok/sec: {int(tok_per_sec):,} | MFU: {mfu:.2f}% | "
                     f"Round duration: {(time.time() - round_start_time):.0f}s",
                 )
 
                 log_entry = {
                     "step": current_step,
                     "time": int(time.time() - experiment_start_time),
-                    f"client_{client_id}/train_loss": debiased_smooth_loss,
-                    f"client_{client_id}/train_ppl": math.exp(debiased_smooth_loss),
+                    f"client_{client_id}/train_loss": loss_scalar,
+                    f"client_{client_id}/train_ppl": math.exp(loss_scalar),
                     f"client_{client_id}/lrm": lrm,
                     f"client_{client_id}/momentum": muon_momentum,
                     f"client_{client_id}/weight_decay": muon_weight_decay,
