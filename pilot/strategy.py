@@ -346,25 +346,17 @@ class PilotAvg(Strategy):
                 client_total = load + compile_t + train + serialize
                 network = send_receive_total - client_total
 
-                # New detailed breakdown
                 dispatch_latency = agg_train_metrics.get("dispatch_latency", 0)  # server→client
                 ddp_spawn_time = agg_train_metrics.get("ddp_spawn_time", 0)
                 client_exit_time = agg_train_metrics.get("client_exit_time", 0)
 
-                # Calculate return latency (client→server) using receive_time captured above
                 return_latency = receive_time - client_exit_time if client_exit_time else 0
-
-                # DDP overhead = spawn_time - train (spawn includes training, so subtract to get pure overhead)
                 ddp_overhead = ddp_spawn_time - train if ddp_spawn_time > 0 else 0
-
-                # Unknown overhead = network - (dispatch + return + ddp_overhead)
-                accounted_overhead = dispatch_latency + return_latency + ddp_overhead
-                unknown_overhead = network - accounted_overhead
+                unknown_overhead = network - (dispatch_latency + return_latency + ddp_overhead)
 
                 log(INFO, f"⏱ round_trip: {send_receive_total:.2f}s (load: {load:.2f}s, compile: {compile_t:.2f}s, train: {train:.2f}s, state_dict: {state_dict_t:.2f}s, array_record: {array_record_t:.2f}s)")
                 log(INFO, f"⏱ network breakdown: {network:.2f}s = dispatch: {dispatch_latency:.2f}s + return: {return_latency:.2f}s + ddp_overhead: {ddp_overhead:.2f}s + unknown: {unknown_overhead:.2f}s")
 
-                # Log timing to wandb for tracking
                 wandb.log({
                     "timing/round_trip": send_receive_total,
                     "timing/model_load": load,

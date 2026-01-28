@@ -16,25 +16,7 @@ Analysis of the ~107s "network overhead" observed during federated learning roun
 | timing/dispatch_latency | 32s | Server send to client entry |
 | timing/return_latency | 27s | Client exit to server receive |
 
-## Key Finding: The Bug
-
-The original calculation was:
-```
-unknown_overhead = network - (dispatch + return + ddp_spawn_time)
-unknown_overhead = 107 - (32 + 27 + 580) = -532s  # WRONG!
-```
-
-The problem: `ddp_spawn_time` (580s) **includes** the training time (525s). We were double-counting.
-
-## Corrected Calculation
-
-```
-ddp_overhead = ddp_spawn_time - train = 580 - 525 = 55s
-unknown_overhead = network - (dispatch + return + ddp_overhead)
-unknown_overhead = 107 - (32 + 27 + 55) = -7s  # ~0, as expected
-```
-
-## Real Breakdown of "Network Overhead"
+## Breakdown of "Network Overhead"
 
 The 107s is **not network overhead** (same physical machine = negligible network latency). It consists of:
 
