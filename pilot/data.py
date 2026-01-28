@@ -69,8 +69,6 @@ class ShardManager:
         """Get summary of shard progress."""
         total = sum(s["total_rows"] for s in self.shard_states.values())
         processed = sum(s["processed_rows"] for s in self.shard_states.values())
-        for s in self.shard_states.values():
-            log(INFO, f"Shard progress: {s['processed_rows']}/{s['total_rows']}")
         return {
             "total_rows": total,
             "processed_rows": processed,

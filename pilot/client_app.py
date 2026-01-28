@@ -3,6 +3,7 @@ import math
 import os
 import sys
 import time
+from contextlib import contextmanager
 from logging import INFO
 
 import redis
@@ -15,6 +16,18 @@ from flwr.common import ConfigRecord, log
 from nanochat.common import get_base_dir
 from pilot.model import get_model
 from pilot.data import fl_shard_dataloader
+
+
+@contextmanager
+def log_timing(label: str, metrics: dict = None, key: str = None, rank: int = 0):
+    """Context manager to log execution time. Optionally stores time in metrics dict."""
+    start = time.time()
+    yield
+    if rank == 0:
+        elapsed = time.time() - start
+        log(INFO, f"⏱ {label}: {elapsed:.2f}s")
+        if metrics is not None and key:
+            metrics[key] = elapsed
 
 
 app = ClientApp()
@@ -127,15 +140,18 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     if rank == 0:
         log(INFO, f"Assigned {len(shard_assignments)} shards to {world_size} workers: {shard_assignments}")
 
-    model = get_model(config, max_seq_len)
-    # Clean state dict keys from `_orig_mod.` prefix (added by torch.compile)
-    state_dict = {k.replace("_orig_mod.", ""): v for k, v in msg.content["arrays"].to_torch_state_dict().items()}
-    model.load_state_dict(state_dict, strict=True)
-    model.to(device)
+    timings = {}
+
+    with log_timing("model_load", timings, "model_load_time", rank):
+        model = get_model(config, max_seq_len)
+        # Clean state dict keys from `_orig_mod.` prefix (added by torch.compile)
+        state_dict = {k.replace("_orig_mod.", ""): v for k, v in msg.content["arrays"].to_torch_state_dict().items()}
+        model.load_state_dict(state_dict, strict=True)
+        model.to(device)
 
     if sys.platform == "linux" and device.type == "cuda":
-        if rank == 0: log(INFO, "Compiling model with torch.compile...")
-        model = torch.compile(model, dynamic=False)
+        with log_timing("compile", timings, "compile_time", rank):
+            model = torch.compile(model, dynamic=False)
     # No DDP wrapper: optimizers handle gradient sync via reduce_scatter/all_reduce
     trainloader = fl_shard_dataloader(
         shard_assignments=shard_assignments,
@@ -190,6 +206,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
         log(INFO, f"Rank {rank}: Dataloader is empty, skipping training loop.")
         iterator = None # Mark as exhausted
 
+    train_loop_start = time.time()
     while iterator:
         with autocast_ctx:
             loss = model(inputs, targets=targets)
@@ -252,12 +269,13 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
                 promised_flops_per_sec_a100 = 312e12
                 mfu = (100 * flops_per_sec / (promised_flops_per_sec_a100 * world_size)) if world_size > 0 else 0.0
 
-                log(
-                    INFO,
-                    f"Step {current_step} ({log_interval_duration*1000:.0f}ms) | Shard: {shard_id} (row {current_row}/{total_rows}) | "
-                    f"Loss: {loss_scalar:.4f} | Tok/sec: {int(tok_per_sec):,} | MFU: {mfu:.2f}% | "
-                    f"Round duration: {(time.time() - round_start_time):.0f}s",
-                )
+                if step_count % 10 == 0:  # TODO: temporary for cleaner logs
+                    log(
+                        INFO,
+                        f"Step {current_step} ({log_interval_duration*1000:.0f}ms) | Shard: {shard_id} (row {current_row}/{total_rows}) | "
+                        f"Loss: {loss_scalar:.4f} | Tok/sec: {int(tok_per_sec):,} | MFU: {mfu:.2f}% | "
+                        f"Round duration: {(time.time() - round_start_time):.0f}s",
+                    )
 
                 log_entry = {
                     "step": current_step,
@@ -273,10 +291,21 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
                 redis_client.rpush(log_key, json.dumps(log_entry))
                 last_log_time = time.time()
 
-            redis_msg = pubsub.get_message(timeout=0)
-            if redis_msg and redis_msg["type"] == "message":
-                if rank == 0:
+            # Only rank 0 checks Redis to avoid race conditions with NCCL collectives
+            should_stop = False
+            if rank == 0:
+                redis_msg = pubsub.get_message(timeout=0)
+                if redis_msg and redis_msg["type"] == "message":
                     log(INFO, f"🛑 Stop signal received ({redis_msg['data'].decode('utf-8')}) after batch {batches_processed}")
+                    should_stop = True
+
+            # Broadcast stop decision to all ranks so they exit together
+            if world_size > 1:
+                stop_tensor = torch.tensor([1 if should_stop else 0], device=device)
+                dist.broadcast(stop_tensor, src=0)
+                should_stop = stop_tensor.item() == 1
+
+            if should_stop:
                 break
 
         shard_progress[shard_id] = current_row
@@ -293,6 +322,9 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     shard_progress, shard_total_rows = _gather_progress(rank, world_size, shard_progress, shard_total_rows)
 
     if rank == 0:
+        timings["train_loop_time"] = time.time() - train_loop_start
+        log(INFO, f"⏱ train_loop: {timings['train_loop_time']:.2f}s")
+
         log(INFO, f"Client {client_id}: {batches_processed} batches")
 
         new_cumulative_batches = cumulative_batches + batches_processed
@@ -304,21 +336,23 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
         shard_rows = list(shard_progress.values())
         shard_totals = [shard_total_rows.get(s_id, 0) for s_id in shard_ids]
 
-        unwrapped_model = model
-        if hasattr(unwrapped_model, "module"):
-            unwrapped_model = unwrapped_model.module
-        if hasattr(unwrapped_model, "_orig_mod"):
-            unwrapped_model = unwrapped_model._orig_mod
-        state_dict = unwrapped_model.state_dict()
+        with log_timing("state_dict", timings, "state_dict_time"):
+            unwrapped_model = model
+            if hasattr(unwrapped_model, "module"):
+                unwrapped_model = unwrapped_model.module
+            if hasattr(unwrapped_model, "_orig_mod"):
+                unwrapped_model = unwrapped_model._orig_mod
+            state_dict = unwrapped_model.state_dict()
 
-        tokens_processed_round = (
-            batches_processed * device_batch_size * max_seq_len * world_size
-        )
+        with log_timing("array_record", timings, "array_record_time"):
+            arrays = ArrayRecord(state_dict)
+
+        tokens_processed_round = batches_processed * device_batch_size * max_seq_len * world_size
 
         result_dict["message"] = Message(
             content=RecordDict(
                 {
-                    "arrays": ArrayRecord(state_dict),
+                    "arrays": arrays,
                     "metrics": MetricRecord(
                         {
                             "client_id": client_id,
@@ -329,6 +363,9 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
                             "shard_rows": shard_rows,
                             "shard_totals": shard_totals,
                             "cumulative_batches": new_cumulative_batches,
+                            **timings,  # Include all timing metrics
+                            "serialize_time": timings.get("state_dict_time", 0) + timings.get("array_record_time", 0),
+                            "actual_train_time": timings["train_loop_time"],
                         }
                     ),
                 }
@@ -339,26 +376,46 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
 
 @app.train()
 def train(msg: Message, context: Context):
+    client_entry_time = time.time()
     num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
-    round_start_time = time.time()
+
+    # Calculate dispatch latency (time from server send to client receive)
+    server_send_time = msg.content.get("config", {}).get("server_send_time", 0)
+    dispatch_latency = client_entry_time - server_send_time if server_send_time else 0
+    if dispatch_latency > 0:
+        log(INFO, f"⏱ dispatch_latency (server→client): {dispatch_latency:.2f}s")
 
     if num_gpus > 1:
         log(INFO, f"Spawning {num_gpus} processes for DDP training")
+        spawn_start = time.time()
         manager = mp.Manager()
         result_dict = manager.dict()
         mp.spawn(
             run_training_process,
-            args=(num_gpus, msg, context, result_dict, round_start_time),
+            args=(num_gpus, msg, context, result_dict, client_entry_time),
             nprocs=num_gpus,
             join=True,
         )
+        spawn_time = time.time() - spawn_start
+        log(INFO, f"⏱ ddp_spawn_total: {spawn_time:.2f}s")
         if "message" not in result_dict:
             raise RuntimeError("Training failed to produce a result message.")
-        return result_dict["message"]
+        reply = result_dict["message"]
+        # Add timing breakdown to metrics
+        reply.content["metrics"]["dispatch_latency"] = dispatch_latency
+        reply.content["metrics"]["ddp_spawn_time"] = spawn_time
+        reply.content["metrics"]["client_entry_time"] = client_entry_time
+        reply.content["metrics"]["client_exit_time"] = time.time()
+        return reply
 
     result_dict = {}
-    run_training_process(0, 1, msg, context, result_dict, round_start_time)
-    return result_dict["message"]
+    run_training_process(0, 1, msg, context, result_dict, client_entry_time)
+    reply = result_dict["message"]
+    reply.content["metrics"]["dispatch_latency"] = dispatch_latency
+    reply.content["metrics"]["ddp_spawn_time"] = 0
+    reply.content["metrics"]["client_entry_time"] = client_entry_time
+    reply.content["metrics"]["client_exit_time"] = time.time()
+    return reply
 
 
 @app.query()

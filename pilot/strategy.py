@@ -1,9 +1,10 @@
 import json
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
-from logging import INFO
-from typing import Optional, Literal, Iterable
+from logging import INFO, DEBUG
+from typing import Optional, Iterable
 
 import redis
 import redis.asyncio
@@ -36,6 +37,14 @@ from pilot.provisioner import ExlsProvisioner
 FlwrNodeId = int
 
 
+@contextmanager
+def log_timing(label: str):
+    """Context manager to log execution time of a code block."""
+    start = time.time()
+    yield
+    log(INFO, f"⏱ {label}: {time.time() - start:.2f}s")
+
+
 @dataclass
 class Client:
     name: str
@@ -43,43 +52,38 @@ class Client:
     deprovision_threshold: int
     redis_url: str
     flwr_node_id: Optional[FlwrNodeId] = None
-    _state: Literal["OFF", "STARTING", "IDLE", "TRAINING"] = "OFF"
+    _provisioned: bool = False
 
-    def update_provisioning(self, redis_client: Redis, provisioner: ExlsProvisioner, carbon_intensity: float):
+    def update_provisioning(
+        self,
+        provisioner: ExlsProvisioner,
+        carbon_intensity: float,
+        round_complete: threading.Event,
+    ):
         # Check whether the client should be provisioned
-        if self._state == "OFF" and carbon_intensity < self.provision_threshold:
-            self._state = "STARTING"
+        if not self._provisioned and carbon_intensity < self.provision_threshold:
+            self._provisioned = True
             provisioner.add_node(self.name)
         # Check whether the client should be deprovisioned
-        elif self._state != "OFF" and carbon_intensity > self.deprovision_threshold:
-            threading.Thread(target=self._deprovision, args=(provisioner,)).start()
+        elif self._provisioned and carbon_intensity > self.deprovision_threshold:
+            threading.Thread(
+                target=self._deprovision, args=(provisioner, round_complete)
+            ).start()
 
-    def start_training(self):
-        assert self._state == "IDLE"
-        self._state = "TRAINING"
-
-    def stop_training(self):
-        assert self._state == "TRAINING"
-        self._state = "IDLE"
-
-    def _deprovision(self, provisioner: ExlsProvisioner):
-        """Gracefully deprovision a client by signaling stop and waiting for completion."""
+    def _deprovision(
+        self, provisioner: ExlsProvisioner, round_complete: threading.Event
+    ):
+        """Gracefully deprovision a client by signaling stop and waiting for round completion."""
         redis_client = redis.from_url(self.redis_url)
-        # Wrap up current round in case the client is still training
-        if self._state == "TRAINING":
+        # Signal stop and wait for round to complete if one is in progress
+        if not round_complete.is_set():
             log(INFO, f"Signaling client '{self.name}' to stop training")
             redis_client.publish(f"{self.name}:stop", f"DEPROVISION {self.name}")
-            
-            # Wait for client to become IDLE (set by train loop after results have been returned)
-            wait_start = time.time()
-            while self._state == "TRAINING" and (time.time() - wait_start) < 60:
-                time.sleep(1)
-            if self._state == "TRAINING":
-                log(INFO, f"Client '{self.name}' did not respond within timeout")
-        
-        assert self._state == "IDLE"
+            round_complete.wait(timeout=60)
+
         provisioner.remove_node(self.name)
-        self._state = "OFF"
+        self._provisioned = False
+        self.flwr_node_id = None
 
 
 class PilotAvg(Strategy):
@@ -111,6 +115,8 @@ class PilotAvg(Strategy):
         self.weighted_by_key = "batches_processed"
         self.global_tokens_processed = 0
         self._node_id_to_client: dict[FlwrNodeId, Client] = {}
+        self._round_complete = threading.Event()
+        self._round_complete.set()  # Initially not in a round
 
 
     def summary(self) -> None:
@@ -119,18 +125,22 @@ class PilotAvg(Strategy):
         log(INFO, "\t└──> Shard: '%s'", self.shard_manager)
 
     def _query_clients(self, grid: Grid, flwr_node_ids: list[FlwrNodeId]):
-        log(INFO, f"Querying all {len(flwr_node_ids)} connected Flower nodes for their names...")
+        # Only query nodes we haven't seen before
+        new_node_ids = [nid for nid in flwr_node_ids if nid not in self._node_id_to_client]
+        if not new_node_ids:
+            return  # Skip entirely if no new nodes
+
+        log(INFO, f"Querying {len(new_node_ids)} new Flower nodes for their names...")
         messages = [
             Message(content=RecordDict({"config": ConfigRecord({})}), message_type=MessageType.QUERY, dst_node_id=flwr_node_id, ttl=86400 * 7)
-            for flwr_node_id in flwr_node_ids
+            for flwr_node_id in new_node_ids
         ]
         query_replies = grid.send_and_receive(messages=messages, timeout=10)
         for reply in query_replies:
             client_name = reply.content["config"]["name"]
             log(INFO, f" - Flower node {reply.metadata.src_node_id}: '{client_name}'")
             client = self.clients[client_name]
-            client._state = "IDLE"
-            client._flwr_node_id = reply.metadata.src_node_id
+            client.flwr_node_id = reply.metadata.src_node_id
             self._node_id_to_client[reply.metadata.src_node_id] = client
 
     def configure_train(
@@ -154,7 +164,8 @@ class PilotAvg(Strategy):
         log(INFO, f"Round {server_round}: Step {current_step}, Passing scheduling parameters to clients.")
         # ------------------------------
 
-        self._query_clients(grid, flwr_node_ids)
+        with log_timing("  _query_clients"):
+            self._query_clients(grid, flwr_node_ids)
         log(INFO, "configure_train: Training on all %s Flower nodes", len(flwr_node_ids))
 
         # Get worker assignments from shard manager
@@ -166,16 +177,13 @@ class PilotAvg(Strategy):
             f"{progress['num_complete']}/{progress['num_total']} complete)",
         )
 
-        for flwr_node_id in flwr_node_ids:
-            if flwr_node_id in self._node_id_to_client:
-                self._node_id_to_client[flwr_node_id].start_training()
-
         round_config.update({
             "server_round": server_round,
             "dataset_name": self.dataset_name,
             "num_shards": self.num_shards,
             "redis_url": self.redis_url,
             "global_tokens_processed_start": self.global_tokens_processed,
+            "server_send_time": time.time(),  # For measuring dispatch latency
         })
         if self.debug_port_client:
             round_config["debug_port_client"] = self.debug_port_client
@@ -227,9 +235,6 @@ class PilotAvg(Strategy):
         arrays, metrics = None, None
         if valid_replies:
             for reply in valid_replies:
-                if reply.metadata.src_node_id in self._node_id_to_client:
-                    self._node_id_to_client[reply.metadata.src_node_id].stop_training()
-                
                 reply_metrics = reply.content["metrics"]
                 self.shard_manager.update(
                     shard_ids=reply_metrics.get("shard_ids", []),
@@ -273,7 +278,7 @@ class PilotAvg(Strategy):
         if self.provisioner:
             threading.Thread(
                 target=_provisioning_task,
-                args=(self.clients, self.redis_client, self.provisioner, self.mci_api_url),
+                args=(self.clients, self.provisioner, self.mci_api_url, self._round_complete),
                 daemon=True,
             ).start()
         threading.Thread(target=_poll_logs, args=(self.redis_url, self.clients), daemon=True).start()
@@ -312,10 +317,66 @@ class PilotAvg(Strategy):
             )
             round_controller_thread.start()
 
-            messages = self.configure_train(current_round, arrays, train_config, grid)
-            train_replies = grid.send_and_receive(messages=messages, timeout=timeout)
+            with log_timing("configure_train"):
+                messages = self.configure_train(current_round, arrays, train_config, grid)
 
-            arrays, agg_train_metrics = self.aggregate_train(current_round, train_replies)
+            # Log payload size being sent
+            if messages:
+                payload_mb = sum(len(a.data) for a in messages[0].content["arrays"].values()) / (1024 ** 2)
+                log(INFO, f"📦 Sending {payload_mb:.1f} MB to {len(messages)} client(s)")
+
+            send_receive_start = time.time()
+            self._round_complete.clear()
+            train_replies = grid.send_and_receive(messages=messages, timeout=timeout)
+            self._round_complete.set()
+            receive_time = time.time()  # Capture immediately after receiving
+            send_receive_total = receive_time - send_receive_start
+
+            with log_timing("aggregate_train"):
+                arrays, agg_train_metrics = self.aggregate_train(current_round, train_replies)
+
+            # Log timing breakdown from client metrics
+            if agg_train_metrics:
+                load = agg_train_metrics.get("model_load_time", 0)
+                compile_t = agg_train_metrics.get("compile_time", 0)
+                train = agg_train_metrics.get("train_loop_time", 0)
+                state_dict_t = agg_train_metrics.get("state_dict_time", 0)
+                array_record_t = agg_train_metrics.get("array_record_time", 0)
+                serialize = state_dict_t + array_record_t
+                client_total = load + compile_t + train + serialize
+                network = send_receive_total - client_total
+
+                # New detailed breakdown
+                dispatch_latency = agg_train_metrics.get("dispatch_latency", 0)  # server→client
+                ddp_spawn_time = agg_train_metrics.get("ddp_spawn_time", 0)
+                client_entry_time = agg_train_metrics.get("client_entry_time", 0)
+                client_exit_time = agg_train_metrics.get("client_exit_time", 0)
+
+                # Calculate return latency (client→server) using receive_time captured above
+                return_latency = receive_time - client_exit_time if client_exit_time else 0
+
+                # Unknown overhead = network - (dispatch + return + ddp_spawn)
+                accounted_overhead = dispatch_latency + return_latency + ddp_spawn_time
+                unknown_overhead = network - accounted_overhead
+
+                log(INFO, f"⏱ round_trip: {send_receive_total:.2f}s (load: {load:.2f}s, compile: {compile_t:.2f}s, train: {train:.2f}s, state_dict: {state_dict_t:.2f}s, array_record: {array_record_t:.2f}s)")
+                log(INFO, f"⏱ network breakdown: {network:.2f}s = dispatch: {dispatch_latency:.2f}s + return: {return_latency:.2f}s + ddp_spawn: {ddp_spawn_time:.2f}s + unknown: {unknown_overhead:.2f}s")
+
+                # Log timing to wandb for tracking
+                wandb.log({
+                    "timing/round_trip": send_receive_total,
+                    "timing/model_load": load,
+                    "timing/compile": compile_t,
+                    "timing/train": train,
+                    "timing/state_dict": state_dict_t,
+                    "timing/array_record": array_record_t,
+                    "timing/network_overhead": network,
+                    "timing/client_total": client_total,
+                    "timing/dispatch_latency": dispatch_latency,
+                    "timing/return_latency": return_latency,
+                    "timing/ddp_spawn_time": ddp_spawn_time,
+                    "timing/unknown_overhead": unknown_overhead,
+                })
 
             if agg_train_metrics:
                 log(INFO, "\t└──> Aggregated MetricRecord: %s", agg_train_metrics)
@@ -382,7 +443,7 @@ def _poll_logs(redis_url: str, clients: dict[str, Client]):
                 if not log_entries_str:
                     continue
                 
-                log(INFO, f"Fetched {len(log_entries_str)} log entries for {client_name} from Redis.")
+                log(DEBUG, f"Fetched {len(log_entries_str)} log entries for {client_name} from Redis.")
                 for log_entry_str in log_entries_str:
                     log_entry = json.loads(log_entry_str)
                     step = log_entry.pop("step", None)
@@ -396,13 +457,16 @@ def _poll_logs(redis_url: str, clients: dict[str, Client]):
 
 
 def _provisioning_task(
-    clients: dict[str, Client], redis_client: Redis, provisioner: ExlsProvisioner, mci_api_url: str
+    clients: dict[str, Client],
+    provisioner: ExlsProvisioner,
+    mci_api_url: str,
+    round_complete: threading.Event,
 ):
     """Monitor clients for provisioning and deprovisioning decisions."""
     while True:
         for client in clients.values():
             mci = get_mci(mci_api_url, client.name)
-            client.update_provisioning(redis_client, provisioner, mci)
+            client.update_provisioning(provisioner, mci, round_complete)
         time.sleep(5)
 
 
