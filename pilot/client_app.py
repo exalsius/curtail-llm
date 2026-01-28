@@ -373,6 +373,11 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
             reply_to=msg,
         )
 
+    # Synchronize all ranks before cleanup to prevent NCCL timeout
+    if world_size > 1:
+        dist.barrier()
+        dist.destroy_process_group()
+
 
 @app.train()
 def train(msg: Message, context: Context):
