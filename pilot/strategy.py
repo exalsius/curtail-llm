@@ -349,18 +349,20 @@ class PilotAvg(Strategy):
                 # New detailed breakdown
                 dispatch_latency = agg_train_metrics.get("dispatch_latency", 0)  # server→client
                 ddp_spawn_time = agg_train_metrics.get("ddp_spawn_time", 0)
-                client_entry_time = agg_train_metrics.get("client_entry_time", 0)
                 client_exit_time = agg_train_metrics.get("client_exit_time", 0)
 
                 # Calculate return latency (client→server) using receive_time captured above
                 return_latency = receive_time - client_exit_time if client_exit_time else 0
 
-                # Unknown overhead = network - (dispatch + return + ddp_spawn)
-                accounted_overhead = dispatch_latency + return_latency + ddp_spawn_time
+                # DDP overhead = spawn_time - train (spawn includes training, so subtract to get pure overhead)
+                ddp_overhead = ddp_spawn_time - train if ddp_spawn_time > 0 else 0
+
+                # Unknown overhead = network - (dispatch + return + ddp_overhead)
+                accounted_overhead = dispatch_latency + return_latency + ddp_overhead
                 unknown_overhead = network - accounted_overhead
 
                 log(INFO, f"⏱ round_trip: {send_receive_total:.2f}s (load: {load:.2f}s, compile: {compile_t:.2f}s, train: {train:.2f}s, state_dict: {state_dict_t:.2f}s, array_record: {array_record_t:.2f}s)")
-                log(INFO, f"⏱ network breakdown: {network:.2f}s = dispatch: {dispatch_latency:.2f}s + return: {return_latency:.2f}s + ddp_spawn: {ddp_spawn_time:.2f}s + unknown: {unknown_overhead:.2f}s")
+                log(INFO, f"⏱ network breakdown: {network:.2f}s = dispatch: {dispatch_latency:.2f}s + return: {return_latency:.2f}s + ddp_overhead: {ddp_overhead:.2f}s + unknown: {unknown_overhead:.2f}s")
 
                 # Log timing to wandb for tracking
                 wandb.log({
@@ -375,6 +377,7 @@ class PilotAvg(Strategy):
                     "timing/dispatch_latency": dispatch_latency,
                     "timing/return_latency": return_latency,
                     "timing/ddp_spawn_time": ddp_spawn_time,
+                    "timing/ddp_overhead": ddp_overhead,
                     "timing/unknown_overhead": unknown_overhead,
                 })
 
