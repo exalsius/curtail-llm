@@ -68,23 +68,7 @@ clientapp = "pilot.client_app:app"
 redis_url = "redis://localhost:6379"
 round_min_duration = 600
 
-
-wandb_project = "pilot_flwr"
-tokenizer_threads = 4
-tokenizer_batch_size = 128
-# debug_port_server = 5681
-# debug_port_client = 5682
-log_interval = 1
-
-# exls_cluster_id = "your-cluster-uuid"
-local_provisioning = true
-mci_api_url = "http://localhost:8700"
-clients = {client_0 = {exls_node_id = "uuid-1", provision_threshold = 100, deprovision_threshold = 200}, client_1 = {exls_node_id = "uuid-2", provision_threshold = 80, deprovision_threshold = 150}}
-
-
-# ===== Nanochat Configuration (GPT Pretraining) =====
-# Original nanochat hyperparameters from karpathy/nanochat
-# Baseline: 4h on 8xH100 for 11.2B tokens (560M param model)
+# Nanochat Configuration (original nanochat d20 hyperparameters from karpathy/nanochat)
 dataset_name = "karpathy/fineweb-edu-100b-shuffle"
 num_shards = 240  # Number of parquet files to use (each ~53k rows)
 matrix_lr = 0.02
@@ -93,10 +77,9 @@ unembedding_lr = 0.004
 scalar_lr = 0.5
 device_batch_size = 8
 max_seq_len = 2048
-total_batch_size = 524288  # Matches nanochat d20 default (524k tokens)
+total_batch_size = 524288
 num_iterations = 23400
 
-# Scheduling
 weight_decay = 0.2
 grad_clip = 0.0
 warmup_ratio = 0.0
@@ -113,6 +96,22 @@ n_layer = 20
 n_embd = 1280
 n_head = 10
 n_kv_head = 10
+
+# Logging
+log_interval = 1
+wandb_project = "pilot_flwr"
+# debug_port_server = 5681
+# debug_port_client = 5682
+
+# Povisioning
+local_provisioning = true
+# exls_cluster_id = "your-cluster-uuid"
+mci_api_url = "http://localhost:8700"
+clients = {client_0 = {exls_node_id = "uuid-1", provision_threshold = 100, deprovision_threshold = 200}, client_1 = {exls_node_id = "uuid-2", provision_threshold = 80, deprovision_threshold = 150}}
+
+# Tokenizer
+tokenizer_threads = 4
+tokenizer_batch_size = 128
 
 
 [tool.flwr.federations]
