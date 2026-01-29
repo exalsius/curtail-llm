@@ -2032,7 +2032,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.9.0" },
     { name = "tqdm" },
     { name = "transformers", specifier = ">=4.57.3" },
-    { name = "vessim", extras = ["sil"], specifier = ">=0.13.0" },
+    { name = "vessim", extras = ["sil"], specifier = ">=0.13.1" },
     { name = "wandb" },
 ]
 
@@ -3165,7 +3165,7 @@ wheels = [
 
 [[package]]
 name = "vessim"
-version = "0.13.0"
+version = "0.13.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "docopt-ng" },
@@ -3175,9 +3175,9 @@ dependencies = [
     { name = "numpy" },
     { name = "pandas" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fb/1d/b8d17bc5f8d39c86bc62ea6030b896bfb78a48060fdef3bd115c1babd28a/vessim-0.13.0.tar.gz", hash = "sha256:ac994c52b1e2a7438501fd1b350087f9aed5113b7fb9e7f18a7c3b2df3b032f5", size = 10761053, upload-time = "2026-01-09T00:05:05.49Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/49/78/094044cadffbb8d0006488563bfd7e6cf07d3ac9dfcd90aa927338b27ed5/vessim-0.13.1.tar.gz", hash = "sha256:b3e057fd919dddc81b731cc6efd4ae924f4c1dd28a82179caeb0909a5d0f2ec3", size = 10761228, upload-time = "2026-01-29T14:25:15.547Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e1/7e/a8fc6b81338432bf93397f64e5780692d891a47d000990e910eef182b05e/vessim-0.13.0-py3-none-any.whl", hash = "sha256:608ce3b5da92fd7c9563fde0317dcd2664f9b198e30383df75ea1a7b10e57512", size = 35103, upload-time = "2026-01-09T00:05:07.774Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/ec/0482badeb1fbefe45076767506ce45f663eb18e37ab24264e8114395f0b2/vessim-0.13.1-py3-none-any.whl", hash = "sha256:417ac13355d442b1dcf5de27d68f4c15917cc93725f99c808f51cf5a3a363597", size = 35221, upload-time = "2026-01-29T14:25:13.973Z" },
 ]
 
 [package.optional-dependencies]

@@ -17,7 +17,7 @@ dependencies = [
     "wandb",
     "redis>=5.0.0",
     "exalsius-api-client @ git+https://github.com/exalsius/exalsius-api-spec.git#subdirectory=client-sdk",
-    "vessim[sil]>=0.13.0",
+    "vessim[sil]>=0.13.1",
     # Utilities
     "accelerate",
     "appdirs",
@@ -128,6 +128,3 @@ options.backend.client-resources.num-cpus = 8
 [tool.flwr.federations.local-deployment]
 address = "127.0.0.1:9093"
 insecure = true
-
-[tool.uv.sources]
-vessim = { path = "../vessim", editable = true }
