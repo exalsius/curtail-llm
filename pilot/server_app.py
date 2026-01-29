@@ -9,7 +9,7 @@ from flwr.server.grid.grid import Grid
 from flwr.serverapp import ServerApp
 
 from pilot.model import get_model
-from pilot.provisioner import ExlsProvisioner
+from pilot.provisioner import ExlsProvisioner, SubprocessProvisioner
 from pilot.strategy import Client, PilotAvg
 
 app = ServerApp()
@@ -61,7 +61,16 @@ def main(grid: Grid, context: Context) -> None:
     log(INFO, "Configured clients: %s", list(clients.keys()))
 
     exls_cluster_id: str = context.run_config.get("exls_cluster_id")
-    provisioner = ExlsProvisioner(exls_cluster_id, node_id_mapping) if exls_cluster_id else None
+    local_provisioning: bool = context.run_config.get("local_provisioning", False)
+
+    provisioner = None
+    if local_provisioning:
+        # Default superlink address for local deployment
+        provisioner = SubprocessProvisioner(superlink_address="127.0.0.1:9092")
+        log(INFO, "Using local SubprocessProvisioner")
+    elif exls_cluster_id:
+        provisioner = ExlsProvisioner(exls_cluster_id, node_id_mapping)
+        log(INFO, "Using ExlsProvisioner with cluster_id: %s", exls_cluster_id)
 
     strategy = PilotAvg(
         clients=clients,

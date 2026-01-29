@@ -77,6 +77,7 @@ tokenizer_batch_size = 128
 log_interval = 1
 
 # exls_cluster_id = "your-cluster-uuid"
+local_provisioning = true
 mci_api_url = "http://localhost:8700"
 clients = {client_0 = {exls_node_id = "uuid-1", provision_threshold = 100, deprovision_threshold = 200}, client_1 = {exls_node_id = "uuid-2", provision_threshold = 80, deprovision_threshold = 150}}
 
@@ -128,3 +129,6 @@ options.backend.client-resources.num-cpus = 8
 [tool.flwr.federations.local-deployment]
 address = "127.0.0.1:9093"
 insecure = true
+
+[tool.uv.sources]
+vessim = { path = "../vessim", editable = true }
