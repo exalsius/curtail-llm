@@ -28,3 +28,6 @@ dump.rdb
 
 # Rust BPE model files
 rustbpe/target/
+
+# Vessim
+results
