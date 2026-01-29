@@ -38,6 +38,7 @@ class SubprocessProvisioner:
 
     def __init__(self, superlink_address: str = "127.0.0.1:9092"):
         self.superlink_address = superlink_address
+        self.current_round = 0
         self.processes = {}  # client_name -> (Popen, slot_id)
         # 8xA100 machine, 4 GPUs per client -> 2 slots
         self.gpu_slots = {
@@ -58,31 +59,32 @@ class SubprocessProvisioner:
         self.gpu_slots[slot_id]["busy"] = True
 
         os.makedirs("logs", exist_ok=True)
-        log_file = open(f"logs/{client_name}.log", "w")
+        log_file_path = f"logs/round_{self.current_round}_{client_name}.log"
+        log_file = open(log_file_path, "w")
 
         env = os.environ.copy()
         gpus = self.gpu_slots[slot_id]["gpus"]
         env["CUDA_VISIBLE_DEVICES"] = gpus
+        env["NANOCHAT_BASE_DIR"] = "/workspace/cache/nanochat/"
+        partition_id = int(client_name.split("_")[1])
         cmd = [
             "flower-supernode",
-            "--superlink",
-            self.superlink_address,
-            "--node-config",
-            f"partition-id={int(client_name.split("_")[1])} name={client_name}",
-            "--isolation",
-            "process",
+            "--insecure",
+            "--superlink", self.superlink_address,
+            "--clientappio-api-address", f"127.0.0.1:{9094 + partition_id}",
+            "--node-config", f'partition-id={partition_id} name="{client_name}"',
         ]
         proc = subprocess.Popen(cmd, env=env, stdout=log_file, stderr=subprocess.STDOUT)
         self.processes[client_name] = (proc, slot_id, log_file)
-        log(INFO, f"Provisioned '{client_name}' on GPUs {gpus} (PID {proc.pid}) -> logs/{client_name}.log")
+        log(INFO, f"Provisioned {client_name} on GPUs {gpus} (PID {proc.pid}) -> {log_file_path}")
 
     def remove_node(self, client_name: str):
         if client_name not in self.processes:
-            log(INFO, f"Client '{client_name}' not found to deprovision.")
+            log(INFO, f"{client_name} not found to deprovision.")
             return
 
         proc, slot_id, log_file = self.processes[client_name]
-        log(INFO, f"Deprovisioning '{client_name}' (PID {proc.pid})...")
+        log(INFO, f"Deprovisioning {client_name} (PID {proc.pid})...")
         proc.terminate()
         try:
             proc.wait(timeout=5)

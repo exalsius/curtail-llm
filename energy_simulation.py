@@ -12,7 +12,7 @@ def main():
         ("client_2", "NEM_SA"),
     ]
 
-    environment = vs.Environment(sim_start=SIM_START, step_size=10)
+    environment = vs.Environment(sim_start=SIM_START, step_size=300)
     mci_data = pd.read_csv("mci.csv", index_col="point_time", parse_dates=True)
 
     for client_name, mci_region in clients:
@@ -27,7 +27,7 @@ def main():
                 #    password="zponvkk0HC4oi5Kn1bvI"
                 # )),
             ],
-            grid_signals={"carbon_intensity": vs.Trace(mci_data, column=mci_region)},
+            grid_signals={"mci": vs.Trace(mci_data, column=mci_region)},
         )
 
     environment.add_controller(vs.CsvLogger(outfile="results/experiment1.csv"))

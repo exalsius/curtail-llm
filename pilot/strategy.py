@@ -65,15 +65,15 @@ class Client:
         if not self._provisioned and carbon_intensity < self.provision_threshold:
             self._provisioned = True
             self._deprovision_since = None
-            log(INFO, f"Provisioning client '{self.name}' (MCI: {carbon_intensity})")
+            log(INFO, f"Provisioning {self.name} (MCI: {carbon_intensity})")
             provisioner.add_node(self.name)
         # Check whether the client should be deprovisioned (with 10min delay)
         elif self._provisioned and carbon_intensity > self.deprovision_threshold:
             if self._deprovision_since is None:
-                log(INFO, f"Client '{self.name}' marked for deprovisioning (MCI: {carbon_intensity})")
+                log(INFO, f"{self.name} marked for deprovisioning (MCI: {carbon_intensity})")
                 self._deprovision_since = time.time()
             elif time.time() - self._deprovision_since >= 600:
-                log(INFO, f"Deprovisioning client '{self.name}' (MCI: {carbon_intensity})")
+                log(INFO, f"Deprovisioning {self.name} (MCI: {carbon_intensity})")
                 self._deprovision_since = None
                 threading.Thread(
                     target=self._deprovision, args=(provisioner, round_complete)
@@ -158,9 +158,10 @@ class PilotAvg(Strategy):
         self, server_round: int, arrays: ArrayRecord, base_config: ConfigRecord, grid: Grid
     ) -> Iterable[Message]:
         """Configure the next round of federated training."""
-        while not (flwr_node_ids := list(grid.get_node_ids())):
+        if not (flwr_node_ids := list(grid.get_node_ids())):
             log(INFO, "Waiting for a client to connect")
-            time.sleep(1)
+            while not (flwr_node_ids := list(grid.get_node_ids())):
+                time.sleep(1)
 
         # --- Server-side Scheduling ---
         # Work on a copy to preserve baseline LRs in base_config
@@ -317,16 +318,11 @@ class PilotAvg(Strategy):
         arrays = initial_arrays
         for current_round in range(1, int(num_rounds + 1)):
             log(INFO, f"\n[ROUND {current_round}]")
+            if self.provisioner and hasattr(self.provisioner, "current_round"):
+                self.provisioner.current_round = current_round
             if self.shard_manager.is_complete():
                 log(INFO, "All data shards processed. Terminating training.")
                 break
-
-            round_controller_thread = threading.Thread(
-                target=_determine_round_end,
-                args=(grid, self.redis_client, self.round_min_duration, current_round),
-                daemon=True,
-            )
-            round_controller_thread.start()
 
             with log_timing("configure_train"):
                 messages = self.configure_train(current_round, arrays, train_config, grid)
@@ -335,6 +331,13 @@ class PilotAvg(Strategy):
             if messages:
                 payload_mb = sum(len(a.data) for a in messages[0].content["arrays"].values()) / (1024 ** 2)
                 log(INFO, f"📦 Sending {payload_mb:.1f} MB to {len(messages)} client(s)")
+
+            round_controller_thread = threading.Thread(
+                target=_determine_round_end,
+                args=(grid, self.redis_client, self.round_min_duration, current_round),
+                daemon=True,
+            )
+            round_controller_thread.start()
 
             send_receive_start = time.time()
             self._round_complete.clear()
@@ -473,7 +476,7 @@ def _provisioning_task(
         for client in clients.values():
             mci = get_mci(mci_api_url, client.name)
             client.update_provisioning(provisioner, mci, round_complete)
-        time.sleep(5)
+        time.sleep(10)
 
 
 def _determine_round_end(
@@ -497,4 +500,4 @@ def get_mci(base_url: str, client_name: str) -> float:
     url = f"{base_url}/microgrids/{client_name}"
     response = requests.get(url, timeout=5)
     response.raise_for_status()
-    return response.json()["grid_signals"]["mci_index"]
+    return response.json()["grid_signals"]["mci"]
