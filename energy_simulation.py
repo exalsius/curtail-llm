@@ -31,7 +31,7 @@ def main():
         )
 
     environment.add_controller(vs.CsvLogger(outfile="results/experiment1.csv"))
-    environment.add_controller(vs.Api(export_prometheus=True, broker_port=8700))
+    environment.add_controller(vs.Api(export_prometheus=False, broker_port=8800))
 
     environment.run(until=3600*24, rt_factor=1, behind_threshold=5)
 

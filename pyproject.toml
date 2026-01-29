@@ -106,7 +106,7 @@ wandb_project = "pilot_flwr"
 # Povisioning
 local_provisioning = true
 # exls_cluster_id = "your-cluster-uuid"
-mci_api_url = "http://localhost:8700"
+mci_api_url = "http://localhost:8800"
 clients = {client_0 = {exls_node_id = "uuid-1", provision_threshold = 100, deprovision_threshold = 200}, client_1 = {exls_node_id = "uuid-2", provision_threshold = 80, deprovision_threshold = 150}}
 
 # Tokenizer

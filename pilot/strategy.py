@@ -65,12 +65,15 @@ class Client:
         if not self._provisioned and carbon_intensity < self.provision_threshold:
             self._provisioned = True
             self._deprovision_since = None
+            log(INFO, f"Provisioning client '{self.name}' (MCI: {carbon_intensity})")
             provisioner.add_node(self.name)
         # Check whether the client should be deprovisioned (with 10min delay)
         elif self._provisioned and carbon_intensity > self.deprovision_threshold:
             if self._deprovision_since is None:
+                log(INFO, f"Client '{self.name}' marked for deprovisioning (MCI: {carbon_intensity})")
                 self._deprovision_since = time.time()
             elif time.time() - self._deprovision_since >= 600:
+                log(INFO, f"Deprovisioning client '{self.name}' (MCI: {carbon_intensity})")
                 self._deprovision_since = None
                 threading.Thread(
                     target=self._deprovision, args=(provisioner, round_complete)

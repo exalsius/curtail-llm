@@ -44,6 +44,7 @@ class SubprocessProvisioner:
             0: {"gpus": "0,1,2,3", "busy": False},
             1: {"gpus": "4,5,6,7", "busy": False},
         }
+        log(INFO, f"SubprocessProvisioner initialized with superlink at {self.superlink_address}")
 
     def add_node(self, client_name: str):
         if client_name in self.processes:
