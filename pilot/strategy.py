@@ -53,6 +53,7 @@ class Client:
     redis_url: str
     flwr_node_id: Optional[FlwrNodeId] = None
     _provisioned: bool = False
+    _deprovision_since: Optional[float] = None
 
     def update_provisioning(
         self,
@@ -63,12 +64,19 @@ class Client:
         # Check whether the client should be provisioned
         if not self._provisioned and carbon_intensity < self.provision_threshold:
             self._provisioned = True
+            self._deprovision_since = None
             provisioner.add_node(self.name)
-        # Check whether the client should be deprovisioned
+        # Check whether the client should be deprovisioned (with 10min delay)
         elif self._provisioned and carbon_intensity > self.deprovision_threshold:
-            threading.Thread(
-                target=self._deprovision, args=(provisioner, round_complete)
-            ).start()
+            if self._deprovision_since is None:
+                self._deprovision_since = time.time()
+            elif time.time() - self._deprovision_since >= 600:
+                self._deprovision_since = None
+                threading.Thread(
+                    target=self._deprovision, args=(provisioner, round_complete)
+                ).start()
+        elif self._provisioned:
+            self._deprovision_since = None
 
     def _deprovision(
         self, provisioner: ExlsProvisioner, round_complete: threading.Event
