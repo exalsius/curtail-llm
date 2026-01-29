@@ -1,5 +1,6 @@
 import os
 import subprocess
+import time
 from logging import INFO
 
 import exalsius_api_client as exls
@@ -57,6 +58,11 @@ class SubprocessProvisioner:
             raise RuntimeError(f"No free GPU slots to provision '{client_name}'!")
 
         self.gpu_slots[slot_id]["busy"] = True
+
+        provisioning_delay = 240  # 4 minutes artificial overhead
+        log(INFO, f"Simulating provisioning overhead for {client_name} ({provisioning_delay}s)...")
+        time.sleep(provisioning_delay)
+        log(INFO, f"Provisioning overhead complete for {client_name}, starting supernode.")
 
         os.makedirs("logs", exist_ok=True)
         log_file_path = f"logs/round_{self.current_round}_{client_name}.log"
