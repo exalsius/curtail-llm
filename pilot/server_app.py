@@ -1,4 +1,3 @@
-from collections import defaultdict
 from logging import INFO
 
 import redis
@@ -9,7 +8,7 @@ from flwr.server.grid.grid import Grid
 from flwr.serverapp import ServerApp
 
 from pilot.model import get_model
-from pilot.provisioner import ExlsProvisioner, SubprocessProvisioner
+from pilot.provisioner import SubprocessProvisioner
 from pilot.strategy import Client, PilotAvg
 
 app = ServerApp()
@@ -57,10 +56,11 @@ def main(grid: Grid, context: Context) -> None:
     log(INFO, "Redis DB flushed.")
 
     # Create clients and provisioner from config
-    clients, node_id_mapping = _clients_from_run_config(context.run_config)
+    client_names = [c.strip() for c in context.run_config["clients"].split(",")]
+    clients = {name: Client(name=name, redis_url=redis_url) for name in client_names}
     log(INFO, "Configured clients: %s", list(clients.keys()))
 
-    exls_cluster_id: str = context.run_config.get("exls_cluster_id")
+    curtailment_threshold: float = context.run_config.get("curtailment_threshold", 100)
     local_provisioning: bool = context.run_config.get("local_provisioning", False)
 
     provisioner = None
@@ -68,19 +68,17 @@ def main(grid: Grid, context: Context) -> None:
         # Default superlink address for local deployment
         provisioner = SubprocessProvisioner(superlink_address="127.0.0.1:9092")
         log(INFO, "Using local SubprocessProvisioner")
-    elif exls_cluster_id:
-        provisioner = ExlsProvisioner(exls_cluster_id, node_id_mapping)
-        log(INFO, "Using ExlsProvisioner with cluster_id: %s", exls_cluster_id)
 
     strategy = PilotAvg(
         clients=clients,
         dataset_name=context.run_config["dataset_name"],
         num_shards=num_shards,
         debug_port_client=context.run_config.get("debug_port_client", None),
-        redis_url=context.run_config["redis_url"],
+        redis_url=redis_url,
         round_min_duration=context.run_config["round_min_duration"],
         provisioner=provisioner,
         mci_api_url=context.run_config["mci_api_url"],
+        curtailment_threshold=curtailment_threshold,
         wandb_project=wandb_project,
     )
 
@@ -137,21 +135,3 @@ def main(grid: Grid, context: Context) -> None:
     # Finish wandb run
     wandb.finish()
     log(INFO, "Wandb run finished")
-
-
-def _clients_from_run_config(flat_dict: dict) -> tuple[dict[str, Client], dict[str, str]]:
-    fields_by_client = defaultdict(dict)
-    for key, value in flat_dict.items():
-        if key.startswith("clients."):
-            _, client_name, field = key.split(".")
-            fields_by_client[client_name][field] = value
-
-    clients = {}
-    node_id_mapping = {}
-    redis_url = flat_dict["redis_url"]
-    for client_name, fields in fields_by_client.items():
-        exls_node_id = fields.pop("exls_node_id")
-        node_id_mapping[client_name] = exls_node_id
-        clients[client_name] = Client(name=client_name, redis_url=redis_url, **fields)
-
-    return clients, node_id_mapping

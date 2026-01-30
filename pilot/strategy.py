@@ -48,8 +48,6 @@ def log_timing(label: str):
 @dataclass
 class Client:
     name: str
-    provision_threshold: int
-    deprovision_threshold: int
     redis_url: str
     flwr_node_id: Optional[FlwrNodeId] = None
     _provisioned: bool = False
@@ -59,16 +57,17 @@ class Client:
         self,
         provisioner: ExlsProvisioner,
         carbon_intensity: float,
+        curtailment_threshold: float,
         round_complete: threading.Event,
     ):
         # Check whether the client should be provisioned
-        if not self._provisioned and carbon_intensity < self.provision_threshold:
+        if not self._provisioned and carbon_intensity < curtailment_threshold:
             self._provisioned = True
             self._deprovision_since = None
             log(INFO, f"Provisioning {self.name} (MCI: {carbon_intensity})")
             provisioner.add_node(self.name)
         # Check whether the client should be deprovisioned (with 10min delay)
-        elif self._provisioned and carbon_intensity > self.deprovision_threshold:
+        elif self._provisioned and carbon_intensity > curtailment_threshold:
             if self._deprovision_since is None:
                 log(INFO, f"{self.name} marked for deprovisioning (MCI: {carbon_intensity})")
                 self._deprovision_since = time.time()
@@ -110,6 +109,7 @@ class PilotAvg(Strategy):
         round_min_duration: int,
         provisioner: Optional[ExlsProvisioner],
         mci_api_url: str,
+        curtailment_threshold: float,
         wandb_project: Optional[str] = None,
     ):
         self.clients = clients
@@ -120,6 +120,7 @@ class PilotAvg(Strategy):
         self.round_min_duration = round_min_duration
         self.provisioner = provisioner
         self.mci_api_url = mci_api_url
+        self.curtailment_threshold = curtailment_threshold
         self.wandb_project = wandb_project
         self.redis_client = redis.from_url(redis_url)
         self.shard_manager = ShardManager(num_shards=num_shards)
@@ -290,7 +291,7 @@ class PilotAvg(Strategy):
         if self.provisioner:
             threading.Thread(
                 target=_provisioning_task,
-                args=(self.clients, self.provisioner, self.mci_api_url, self._round_complete),
+                args=(self.clients, self.provisioner, self.mci_api_url, self.curtailment_threshold, self._round_complete),
                 daemon=True,
             ).start()
         threading.Thread(target=_poll_logs, args=(self.redis_url, self.clients), daemon=True).start()
@@ -469,6 +470,7 @@ def _provisioning_task(
     clients: dict[str, Client],
     provisioner: ExlsProvisioner,
     mci_api_url: str,
+    curtailment_threshold: float,
     round_complete: threading.Event,
 ):
     """Monitor clients for provisioning and deprovisioning decisions."""
@@ -481,7 +483,7 @@ def _provisioning_task(
             mci_summary = ", ".join(f"{name}: {mci:.1f}" for name, mci in mci_values.items())
             log(INFO, f"MCI: [{mci_summary}]")
             for client in clients.values():
-                client.update_provisioning(provisioner, mci_values[client.name], round_complete)
+                client.update_provisioning(provisioner, mci_values[client.name], curtailment_threshold, round_complete)
         except Exception as e:
             log(WARNING, f"Error in provisioning task: {e}")
         time.sleep(10)
