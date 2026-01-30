@@ -13,7 +13,6 @@ import torch
 import wandb
 
 from flwr.common import (
-    log,
     ArrayRecord,
     ConfigRecord,
     Message,
@@ -32,6 +31,7 @@ from flwr.serverapp.strategy.strategy_utils import (
 from redis import Redis
 
 from pilot.data import ShardManager
+from pilot.logger import log
 from pilot.event_log import get_event_log
 from pilot.provisioner import ExlsProvisioner
 

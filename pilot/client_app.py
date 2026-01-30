@@ -12,7 +12,8 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
-from flwr.common import ConfigRecord, log
+from flwr.common import ConfigRecord
+from pilot.logger import init_logger, log
 from nanochat.common import get_base_dir
 from pilot.model import get_model
 from pilot.data import fl_shard_dataloader
@@ -78,6 +79,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
     config: ConfigRecord = msg.content["config"]
 
     experiment_start_time = int(config.get("experiment_start_time", time.time()))
+    init_logger(experiment_start_time)
 
     if world_size > 1:
         device = _setup_ddp(rank, world_size, client_id)

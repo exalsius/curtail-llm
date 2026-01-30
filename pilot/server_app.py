@@ -1,9 +1,10 @@
+import time
 from logging import INFO
 
 import redis
 import wandb
 from flwr.app import ArrayRecord, ConfigRecord, Context
-from flwr.common import log
+from pilot.logger import init_logger, log
 from flwr.server.grid.grid import Grid
 from flwr.serverapp import ServerApp
 
@@ -54,6 +55,9 @@ def main(grid: Grid, context: Context) -> None:
     redis_url: str = context.run_config["redis_url"]
     redis_client = redis.from_url(redis_url)
     redis_client.flushdb()
+
+    experiment_start_time = time.time()
+    init_logger(experiment_start_time)
     log(INFO, "Redis DB flushed.")
 
     evt = init_event_log()

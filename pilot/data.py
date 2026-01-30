@@ -4,7 +4,7 @@ from logging import INFO
 
 import torch
 import pyarrow.parquet as pq
-from flwr.common import log
+from pilot.logger import log
 
 from nanochat.common import get_base_dir
 from nanochat.tokenizer import get_tokenizer
