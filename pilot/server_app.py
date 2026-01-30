@@ -7,6 +7,7 @@ from flwr.common import log
 from flwr.server.grid.grid import Grid
 from flwr.serverapp import ServerApp
 
+from pilot.event_log import init_event_log
 from pilot.model import get_model
 from pilot.provisioner import SubprocessProvisioner
 from pilot.strategy import Client, PilotAvg
@@ -55,10 +56,13 @@ def main(grid: Grid, context: Context) -> None:
     redis_client.flushdb()
     log(INFO, "Redis DB flushed.")
 
+    evt = init_event_log()
+
     # Create clients and provisioner from config
     client_names = [c.strip() for c in context.run_config["clients"].split(",")]
     clients = {name: Client(name=name, redis_url=redis_url) for name in client_names}
     log(INFO, "Configured clients: %s", list(clients.keys()))
+    evt.log("EXPERIMENT_START", details=", ".join(client_names))
 
     curtailment_threshold: float = context.run_config.get("curtailment_threshold", 100)
     local_provisioning: bool = context.run_config.get("local_provisioning", False)

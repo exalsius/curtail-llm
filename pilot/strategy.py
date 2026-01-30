@@ -32,6 +32,7 @@ from flwr.serverapp.strategy.strategy_utils import (
 from redis import Redis
 
 from pilot.data import ShardManager
+from pilot.event_log import get_event_log
 from pilot.provisioner import ExlsProvisioner
 
 FlwrNodeId = int
@@ -60,19 +61,26 @@ class Client:
         curtailment_threshold: float,
         round_complete: threading.Event,
     ):
+        evt = get_event_log()
         # Check whether the client should be provisioned
         if not self._provisioned and carbon_intensity < curtailment_threshold:
             self._provisioned = True
             self._deprovision_since = None
             log(INFO, f"Provisioning {self.name} (MCI: {carbon_intensity})")
+            if evt:
+                evt.log("PROVISION_DECISION", client=self.name, details=f"mci={carbon_intensity}")
             provisioner.add_node(self.name)
         # Check whether the client should be deprovisioned (with 10min delay)
         elif self._provisioned and carbon_intensity > curtailment_threshold:
             if self._deprovision_since is None:
                 log(INFO, f"{self.name} marked for deprovisioning (MCI: {carbon_intensity})")
+                if evt:
+                    evt.log("DEPROVISION_MARKED", client=self.name, details=f"mci={carbon_intensity}")
                 self._deprovision_since = time.time()
             elif time.time() - self._deprovision_since >= 600:
                 log(INFO, f"Deprovisioning {self.name} (MCI: {carbon_intensity})")
+                if evt:
+                    evt.log("DEPROVISION_STARTED", client=self.name, details=f"mci={carbon_intensity}")
                 self._deprovision_since = None
                 threading.Thread(
                     target=self._deprovision, args=(provisioner, round_complete)
@@ -150,10 +158,14 @@ class PilotAvg(Strategy):
         query_replies = grid.send_and_receive(messages=messages, timeout=10)
         for reply in query_replies:
             client_name = reply.content["config"]["name"]
-            log(INFO, f" - Flower node {reply.metadata.src_node_id}: '{client_name}'")
+            flwr_node_id = reply.metadata.src_node_id
+            log(INFO, f" - Flower node {flwr_node_id}: '{client_name}'")
             client = self.clients[client_name]
-            client.flwr_node_id = reply.metadata.src_node_id
-            self._node_id_to_client[reply.metadata.src_node_id] = client
+            client.flwr_node_id = flwr_node_id
+            self._node_id_to_client[flwr_node_id] = client
+            evt = get_event_log()
+            if evt:
+                evt.log("CLIENT_CONNECTED", client=client_name, details=f"flwr_node_id={flwr_node_id}")
 
     def configure_train(
         self, server_round: int, arrays: ArrayRecord, base_config: ConfigRecord, grid: Grid
@@ -269,6 +281,10 @@ class PilotAvg(Strategy):
             arrays = aggregate_arrayrecords(reply_contents, self.weighted_by_key)
             metrics = aggregate_metricrecords(reply_contents, self.weighted_by_key)
 
+            evt = get_event_log()
+            if evt:
+                evt.log("AGGREGATION", round=server_round, details=f"num_clients={len(valid_replies)}")
+
             self._log_to_wandb(server_round, progress, valid_replies, metrics)
 
         if arrays is None:
@@ -321,6 +337,9 @@ class PilotAvg(Strategy):
             log(INFO, f"\n[ROUND {current_round}]")
             if self.provisioner and hasattr(self.provisioner, "current_round"):
                 self.provisioner.current_round = current_round
+            evt = get_event_log()
+            if evt:
+                evt.log("ROUND_START", round=current_round)
             if self.shard_manager.is_complete():
                 log(INFO, "All data shards processed. Terminating training.")
                 break
@@ -345,6 +364,9 @@ class PilotAvg(Strategy):
             train_replies = grid.send_and_receive(messages=messages, timeout=timeout)
             self._round_complete.set()
             receive_time = time.time()  # Capture immediately after receiving
+            num_clients = len(list(grid.get_node_ids()))
+            if evt:
+                evt.log("ROUND_END", round=current_round, details=f"clients={num_clients}")
             send_receive_total = receive_time - send_receive_start
 
             with log_timing("aggregate_train"):
@@ -482,6 +504,9 @@ def _provisioning_task(
                 mci_values[client.name] = mci
             mci_summary = ", ".join(f"{name}: {mci:.1f}" for name, mci in mci_values.items())
             log(INFO, f"MCI: [{mci_summary}]")
+            evt = get_event_log()
+            if evt:
+                evt.log("MCI_CHECK", details=mci_summary)
             for client in clients.values():
                 client.update_provisioning(provisioner, mci_values[client.name], curtailment_threshold, round_complete)
         except Exception as e:
@@ -496,12 +521,26 @@ def _determine_round_end(
     start_time = time.time()
     time.sleep(round_min_duration)
 
-    while len(list(grid.get_node_ids())) <= 1:
-        log(INFO, f"Round active since {int(time.time() - start_time)}s, waiting for more clients to join...")
-        time.sleep(10)
+    num_clients = len(list(grid.get_node_ids()))
+
+    if num_clients >= 2:
+        # 2+ clients: end round immediately after min duration
+        pass
+    elif num_clients == 1:
+        # Single client: train continuously until a 2nd joins or all disconnect
+        log(INFO, f"Single client active. Waiting for a 2nd client to join...")
+        while True:
+            num_clients = len(list(grid.get_node_ids()))
+            if num_clients != 1:
+                break
+            time.sleep(10)
+    # 0 clients: fall through and signal end
 
     redis_client.publish(f"round:{current_round}:stop", f"END ROUND {current_round}")
-    log(INFO, f"🛑 Signaled END ROUND after {int(time.time() - start_time)}s with {len(list(grid.get_node_ids()))} connected Flower clients.")
+    elapsed = int(time.time() - start_time)
+    num_clients = len(list(grid.get_node_ids()))
+    log(INFO, f"Signaled END ROUND {current_round} after {elapsed}s "
+        f"with {num_clients} connected Flower clients.")
 
 
 
