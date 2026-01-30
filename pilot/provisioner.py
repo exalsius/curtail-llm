@@ -1,10 +1,13 @@
 import os
 import subprocess
 import time
+from datetime import datetime
 from logging import INFO
 
 import exalsius_api_client as exls
 from flwr.common import log
+
+from pilot.event_log import get_event_log
 
 ExlsNodeId = str
 
@@ -60,12 +63,16 @@ class SubprocessProvisioner:
         self.gpu_slots[slot_id]["busy"] = True
 
         provisioning_delay = 240  # 4 minutes artificial overhead
+        evt = get_event_log()
+        if evt:
+            evt.log("PROVISION_START", client=client_name)
         log(INFO, f"Simulating provisioning overhead for {client_name} ({provisioning_delay}s)...")
         time.sleep(provisioning_delay)
         log(INFO, f"Provisioning overhead complete for {client_name}, starting supernode.")
 
         os.makedirs("logs", exist_ok=True)
-        log_file_path = f"logs/round_{self.current_round}_{client_name}.log"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file_path = f"logs/{client_name}_r{self.current_round}_{timestamp}.log"
         log_file = open(log_file_path, "w")
 
         env = os.environ.copy()
@@ -83,6 +90,8 @@ class SubprocessProvisioner:
         proc = subprocess.Popen(cmd, env=env, stdout=log_file, stderr=subprocess.STDOUT)
         self.processes[client_name] = (proc, slot_id, log_file)
         log(INFO, f"Provisioned {client_name} on GPUs {gpus} (PID {proc.pid}) -> {log_file_path}")
+        if evt:
+            evt.log("PROVISION_COMPLETE", client=client_name, details=f"pid={proc.pid} gpus={gpus}")
 
     def remove_node(self, client_name: str):
         if client_name not in self.processes:
@@ -91,6 +100,9 @@ class SubprocessProvisioner:
 
         proc, slot_id, log_file = self.processes[client_name]
         log(INFO, f"Deprovisioning {client_name} (PID {proc.pid})...")
+        evt = get_event_log()
+        if evt:
+            evt.log("DEPROVISION", client=client_name)
         proc.terminate()
         try:
             proc.wait(timeout=5)
