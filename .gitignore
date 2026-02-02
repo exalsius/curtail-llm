@@ -15,7 +15,6 @@ wheels/
 wandb/
 offload
 
-
 # Hydra outputs
 outputs/
 multirun/
@@ -29,5 +28,6 @@ dump.rdb
 # Rust BPE model files
 rustbpe/target/
 
-# Vessim
+# Experiments
 results
+logs

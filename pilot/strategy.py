@@ -497,20 +497,8 @@ def _provisioning_task(
 ):
     """Monitor clients for provisioning and deprovisioning decisions."""
     while True:
-        try:
-            mci_values = {}
-            for client in clients.values():
-                mci = get_mci(mci_api_url, client.name)
-                mci_values[client.name] = mci
-            mci_summary = ", ".join(f"{name}: {mci:.1f}" for name, mci in mci_values.items())
-            log(INFO, f"MCI: [{mci_summary}]")
-            evt = get_event_log()
-            if evt:
-                evt.log("MCI_CHECK", details=mci_summary)
-            for client in clients.values():
-                client.update_provisioning(provisioner, mci_values[client.name], curtailment_threshold, round_complete)
-        except Exception as e:
-            log(WARNING, f"Error in provisioning task: {e}")
+        for client in clients.values():
+            client.update_provisioning(provisioner, get_mci(mci_api_url, client.name), curtailment_threshold, round_complete)
         time.sleep(10)
 
 

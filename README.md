@@ -41,23 +41,38 @@ The system uses Redis for coordination between server and clients.
 Redis must be accessible by all nodes, run via:
 
 ```bash
-apt-get update
-apt-get install redis-server
+sudo apt-get update
+sudo apt-get install redis-server
 redis-server --daemonize yes
 redis-cli ping
 ```
 
 ## Quick Start
 
+```
+echo "set -g mouse on" >> ~/.tmux.conf
+tmux source-file ~/.tmux.conf
+```
+
 ### Deployment
 
 Deploy across multiple physical nodes:
 
-1. Make sure Redis is running.
+0. Make sure Redis is running.
 ```bash
 redis-server --daemonize yes
 # docker run -d -p 6379:6379 redis:latest
 redis-cli ping
+```
+
+1. Vessim
+```bash
+tmux new -A -s vessim
+
+cd /workspace/pilot
+source .venv/bin/activate
+
+python energy_simulation.py
 ```
 
 2. Start Flower SuperLink (coordinator):
@@ -71,6 +86,7 @@ export WANDB_API_KEY=wandb_v1_Wh8gx87Hthb3L2IRHNSD2JJJJsi_uJcjm96cjH5Xw9Jg1plnbI
 
 flower-superlink --insecure
 ```
+
 
 3. Start SuperNodes (workers) on each GPU:
 ```bash
