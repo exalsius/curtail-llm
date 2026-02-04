@@ -1,0 +1,50 @@
+# Vessim energy simulation: Deployment + Service (port 8800)
+# Usage: kubectl apply -f vessim-deployment.yaml [-n <namespace>]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vessim
+  labels:
+    app: vessim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vessim
+  template:
+    metadata:
+      labels:
+        app: vessim
+    spec:
+      containers:
+        - name: vessim
+          image: srnbckr/vessim
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: api
+              containerPort: 8800
+              protocol: TCP
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vessim
+  labels:
+    app: vessim
+spec:
+  type: ClusterIP
+  selector:
+    app: vessim
+  ports:
+    - name: api
+      port: 8800
+      targetPort: 8800
+      protocol: TCP
