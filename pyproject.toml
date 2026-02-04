@@ -103,12 +103,18 @@ wandb_project = "pilot_flwr"
 # debug_port_server = 5681
 # debug_port_client = 5682
 
-# Povisioning
-local_provisioning = true
-# exls_cluster_id = "your-cluster-uuid"
-mci_api_url = "http://localhost:8800"
+# Provisioning
+provisioner = "none"  # "none" | "exalsius" | "local"
+exalsius_cluster_id = "your-cluster-uuid"
 clients = "client_0,client_1,client_2"
+exalsius_node_ids = "node-id-0,node-id-1,node-id-2"
+mci_api_url = "http://localhost:8800"
 curtailment_threshold = 100
+
+# Outer optimizer (DiLoCo)
+outer_optimizer = "nesterov"   # "none" (FedAvg) or "nesterov"
+outer_lr = 0.7
+outer_momentum = 0.9
 
 # Tokenizer
 tokenizer_threads = 4

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from logging import INFO, DEBUG, WARNING
 from typing import Optional, Iterable
 
+import numpy as np
 import redis
 import redis.asyncio
 import requests
@@ -13,6 +14,7 @@ import torch
 import wandb
 
 from flwr.common import (
+    Array,
     ArrayRecord,
     ConfigRecord,
     Message,
@@ -119,6 +121,9 @@ class PilotAvg(Strategy):
         mci_api_url: str,
         curtailment_threshold: float,
         wandb_project: Optional[str] = None,
+        outer_optimizer: str = "none",
+        outer_lr: float = 0.7,
+        outer_momentum: float = 0.9,
     ):
         self.clients = clients
         self.dataset_name = dataset_name
@@ -137,6 +142,10 @@ class PilotAvg(Strategy):
         self._node_id_to_client: dict[FlwrNodeId, Client] = {}
         self._round_complete = threading.Event()
         self._round_complete.set()  # Initially not in a round
+        self.outer_optimizer = outer_optimizer
+        self.outer_lr = outer_lr
+        self.outer_momentum = outer_momentum
+        self.momentum_buffer: dict[str, np.ndarray] | None = None
 
 
     def summary(self) -> None:
@@ -303,6 +312,26 @@ class PilotAvg(Strategy):
     ) -> tuple[Optional[ArrayRecord], Optional[MetricRecord]]:
         return None, None  # not used, server-side eval only
 
+    def _apply_nesterov(self, prev: ArrayRecord, aggregated: ArrayRecord) -> ArrayRecord:
+        """Apply Nesterov momentum outer optimizer (DiLoCo-style)."""
+        eta = self.outer_lr
+        beta = self.outer_momentum
+
+        if self.momentum_buffer is None:
+            self.momentum_buffer = {key: np.zeros_like(prev[key].numpy()) for key in prev}
+            log(INFO, "Initialized Nesterov momentum buffer (%d params)", len(self.momentum_buffer))
+
+        result = ArrayRecord()
+        for key in prev:
+            prev_np = prev[key].numpy()
+            agg_np = aggregated[key].numpy()
+            delta = prev_np - agg_np  # pseudo-gradient
+            self.momentum_buffer[key] = beta * self.momentum_buffer[key] + delta
+            new_val = prev_np - eta * (beta * self.momentum_buffer[key] + delta)
+            result[key] = Array(new_val)
+
+        return result
+
     def _start_threads(self):
         if self.provisioner:
             threading.Thread(
@@ -344,6 +373,8 @@ class PilotAvg(Strategy):
                 log(INFO, "All data shards processed. Terminating training.")
                 break
 
+            prev_arrays = arrays
+
             with log_timing("configure_train"):
                 messages = self.configure_train(current_round, arrays, train_config, grid)
 
@@ -371,6 +402,10 @@ class PilotAvg(Strategy):
 
             with log_timing("aggregate_train"):
                 arrays, agg_train_metrics = self.aggregate_train(current_round, train_replies)
+
+            if self.outer_optimizer == "nesterov" and arrays is not None:
+                with log_timing("nesterov_outer_step"):
+                    arrays = self._apply_nesterov(prev_arrays, arrays)
 
             # Log timing breakdown from client metrics
             if agg_train_metrics:

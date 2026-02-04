@@ -96,6 +96,9 @@ def main(grid: Grid, context: Context) -> None:
         mci_api_url=context.run_config["mci_api_url"],
         curtailment_threshold=curtailment_threshold,
         wandb_project=wandb_project,
+        outer_optimizer=context.run_config.get("outer_optimizer", "none"),
+        outer_lr=float(context.run_config.get("outer_lr", 0.7)),
+        outer_momentum=float(context.run_config.get("outer_momentum", 0.9)),
     )
 
     # Calculate derived parameters
