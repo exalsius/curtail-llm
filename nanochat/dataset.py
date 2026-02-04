@@ -109,20 +109,26 @@ def download_single_file(index):
     return False
 
 
+def download_shards(num_files: int = -1, num_workers: int = 4) -> int:
+    """
+    Download dataset shards into DATA_DIR (from get_base_dir() at import).
+    num_files: number of shards to download; -1 = all (MAX_SHARD + 1).
+    Returns number of successfully downloaded shards.
+    """
+    num = MAX_SHARD + 1 if num_files == -1 else min(num_files, MAX_SHARD + 1)
+    ids_to_download = list(range(num))
+    print(f"Downloading {len(ids_to_download)} shards using {num_workers} workers...")
+    print(f"Target directory: {DATA_DIR}")
+    with Pool(processes=num_workers) as pool:
+        results = pool.map(download_single_file, ids_to_download)
+    successful = sum(1 for s in results if s)
+    print(f"Done! Downloaded: {successful}/{len(ids_to_download)} shards to {DATA_DIR}")
+    return successful
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Download FineWeb-Edu 100BT dataset shards")
     parser.add_argument("-n", "--num-files", type=int, default=-1, help="Number of shards to download (default: -1), -1 = disable")
     parser.add_argument("-w", "--num-workers", type=int, default=4, help="Number of parallel download workers (default: 4)")
     args = parser.parse_args()
-
-    num = MAX_SHARD + 1 if args.num_files == -1 else min(args.num_files, MAX_SHARD + 1)
-    ids_to_download = list(range(num))
-    print(f"Downloading {len(ids_to_download)} shards using {args.num_workers} workers...")
-    print(f"Target directory: {DATA_DIR}")
-    print()
-    with Pool(processes=args.num_workers) as pool:
-        results = pool.map(download_single_file, ids_to_download)
-
-    # Report results
-    successful = sum(1 for success in results if success)
-    print(f"Done! Downloaded: {successful}/{len(ids_to_download)} shards to {DATA_DIR}")
+    download_shards(num_files=args.num_files, num_workers=args.num_workers)

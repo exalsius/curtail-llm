@@ -1,10 +1,12 @@
+from hashlib import sha1
 import json
 import math
 import os
+import shutil
 import sys
 import time
 from contextlib import contextmanager
-from logging import INFO
+from logging import INFO, shutdown
 
 import redis
 import torch
@@ -15,8 +17,34 @@ from flwr.clientapp import ClientApp
 from flwr.common import ConfigRecord
 from pilot.logger import init_logger, log
 from nanochat.common import get_base_dir
+from nanochat.dataset import download_shards
+from nanochat.tokenizer import get_tokenizer, train_and_save_tokenizer
 from pilot.model import get_model
 from pilot.data import fl_shard_dataloader
+
+
+def ensure_dataset_and_tokenizer(num_shards: int = 240, max_chars: int = 4_000_000_000, vocab_size: int = 65536) -> None:
+    """
+    Idempotent preprocessing: ensure dataset and BPE tokenizer exist under NANOCHAT_BASE_DIR.
+    NANOCHAT_BASE_DIR is read from the environment (set from the outside).
+    If tokenizer already exists, skip. Otherwise download dataset and train tokenizer.
+    """
+    base_dir = get_base_dir()
+
+    tokenizer_pkl = os.path.join(base_dir, "tokenizer", "tokenizer.pkl")
+    if os.path.exists(tokenizer_pkl):
+        vocab = get_tokenizer().get_vocab_size()
+        log(INFO, "Dataset and tokenizer already present (vocab_size=%s), skipping prep.", vocab)
+        return
+    else:
+        # copy tokenizer files to volume mount point (base_dir/tokenizer/...)
+        shutil.copytree("/app/tokenizer", os.path.join(base_dir, "tokenizer"))
+
+    log(INFO, "Preparing dataset and tokenizer under %s (idempotent)", base_dir)
+    download_shards(num_files=num_shards)
+    #train_and_save_tokenizer(max_chars=max_chars, vocab_size=vocab_size, base_dir=base_dir)
+    #vocab = get_tokenizer().get_vocab_size()
+    #log(INFO, "Prepared dataset and tokenizer (vocab_size=%s).", vocab)
 
 
 @contextmanager
@@ -383,6 +411,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
 
 @app.train()
 def train(msg: Message, context: Context):
+    ensure_dataset_and_tokenizer()
     client_entry_time = time.time()
     num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
 
