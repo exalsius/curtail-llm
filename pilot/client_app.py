@@ -18,7 +18,7 @@ from flwr.common import ConfigRecord
 from pilot.logger import init_logger, log
 from nanochat.common import get_base_dir
 from nanochat.dataset import download_shards
-from nanochat.tokenizer import get_tokenizer, train_and_save_tokenizer
+from nanochat.tokenizer import get_tokenizer
 from pilot.model import get_model
 from pilot.data import fl_shard_dataloader
 
@@ -42,10 +42,6 @@ def ensure_dataset_and_tokenizer(num_shards: int = 240, max_chars: int = 4_000_0
 
     log(INFO, "Preparing dataset and tokenizer under %s (idempotent)", base_dir)
     download_shards(num_files=num_shards)
-    #train_and_save_tokenizer(max_chars=max_chars, vocab_size=vocab_size, base_dir=base_dir)
-    #vocab = get_tokenizer().get_vocab_size()
-    #log(INFO, "Prepared dataset and tokenizer (vocab_size=%s).", vocab)
-
 
 @contextmanager
 def log_timing(label: str, metrics: dict = None, key: str = None, rank: int = 0):
