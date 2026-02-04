@@ -10,7 +10,7 @@ from flwr.serverapp import ServerApp
 
 from pilot.event_log import init_event_log
 from pilot.model import get_model
-from pilot.provisioner import SubprocessProvisioner
+from pilot.provisioner import ExalsiusProvisioner, SubprocessProvisioner
 from pilot.strategy import Client, PilotAvg
 
 app = ServerApp()
@@ -69,13 +69,21 @@ def main(grid: Grid, context: Context) -> None:
     evt.log("EXPERIMENT_START", details=", ".join(client_names))
 
     curtailment_threshold: float = context.run_config.get("curtailment_threshold", 100)
-    local_provisioning: bool = context.run_config.get("local_provisioning", False)
 
-    provisioner = None
-    if local_provisioning:
-        # Default superlink address for local deployment
+    provisioner_type = context.run_config.get("provisioner", "none")
+    if provisioner_type == "exalsius":
+        node_ids = [n.strip() for n in context.run_config["exalsius_node_ids"].split(",")]
+        node_mapping = dict(zip(client_names, node_ids))
+        provisioner = ExalsiusProvisioner(
+            cluster_id=context.run_config["exalsius_cluster_id"],
+            node_id_mapping=node_mapping,
+        )
+        log(INFO, "Using ExalsiusProvisioner (cluster=%s)", context.run_config["exalsius_cluster_id"])
+    elif provisioner_type == "local":
         provisioner = SubprocessProvisioner(superlink_address="127.0.0.1:9092")
         log(INFO, "Using local SubprocessProvisioner")
+    else:
+        provisioner = None
 
     strategy = PilotAvg(
         clients=clients,

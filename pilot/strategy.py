@@ -33,7 +33,7 @@ from redis import Redis
 from pilot.data import ShardManager
 from pilot.logger import log
 from pilot.event_log import get_event_log
-from pilot.provisioner import ExlsProvisioner
+from pilot.provisioner import Provisioner
 
 FlwrNodeId = int
 
@@ -56,7 +56,7 @@ class Client:
 
     def update_provisioning(
         self,
-        provisioner: ExlsProvisioner,
+        provisioner: Provisioner,
         carbon_intensity: float,
         curtailment_threshold: float,
         round_complete: threading.Event,
@@ -89,7 +89,7 @@ class Client:
             self._deprovision_since = None
 
     def _deprovision(
-        self, provisioner: ExlsProvisioner, round_complete: threading.Event
+        self, provisioner: Provisioner, round_complete: threading.Event
     ):
         """Gracefully deprovision a client by signaling stop and waiting for round completion."""
         redis_client = redis.from_url(self.redis_url)
@@ -115,7 +115,7 @@ class PilotAvg(Strategy):
         debug_port_client: bool,
         redis_url: str,
         round_min_duration: int,
-        provisioner: Optional[ExlsProvisioner],
+        provisioner: Optional[Provisioner],
         mci_api_url: str,
         curtailment_threshold: float,
         wandb_project: Optional[str] = None,
@@ -490,7 +490,7 @@ def _poll_logs(redis_url: str, clients: dict[str, Client]):
 
 def _provisioning_task(
     clients: dict[str, Client],
-    provisioner: ExlsProvisioner,
+    provisioner: Provisioner,
     mci_api_url: str,
     curtailment_threshold: float,
     round_complete: threading.Event,

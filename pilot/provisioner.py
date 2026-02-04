@@ -1,6 +1,7 @@
 import os
 import subprocess
 import time
+from abc import ABC, abstractmethod
 from datetime import datetime
 from logging import INFO
 
@@ -12,7 +13,15 @@ from pilot.event_log import get_event_log
 ExlsNodeId = str
 
 
-class ExlsProvisioner:
+class Provisioner(ABC):
+    @abstractmethod
+    def add_node(self, client_name: str) -> None: ...
+
+    @abstractmethod
+    def remove_node(self, client_name: str) -> None: ...
+
+
+class ExalsiusProvisioner(Provisioner):
     """Manages Exalsius cloud node provisioning."""
 
     def __init__(self, cluster_id: str, node_id_mapping: dict[str, ExlsNodeId]):
@@ -37,7 +46,7 @@ class ExlsProvisioner:
         log(INFO, f"Deprovisioned '{client_name}' (Exalsius node {exls_node_id})")
 
 
-class SubprocessProvisioner:
+class SubprocessProvisioner(Provisioner):
     """Manages local Flower supernode subprocesses."""
 
     def __init__(self, superlink_address: str = "127.0.0.1:9092"):
