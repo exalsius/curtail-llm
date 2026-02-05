@@ -14,10 +14,9 @@ spec:
     image: flwr/superlink:1.25.0
     superexecImage: ghcr.io/exalsius/derms-pilot:latest
 
-
     env:
       - name: WANDB_API_KEY
-        value: "wandb_XXXXXXXXXXXXXXXXXXXXx"  # TODO: Add your Weights & Biases API key
+        value: "wandb_XXXXXXXXXXXX"  # TODO: Add your Weights & Biases API key
       - name: NANOCHAT_BASE_DIR
         value: /data/cache/nanochat/
 
@@ -47,7 +46,11 @@ spec:
         images:
           superexecClientApp: ghcr.io/exalsius/derms-pilot:latest
 
-
+        nodeConfig:
+          name: "client_{index}"
+          # Each replica gets a unique partition
+          partition-id: "{index}"
+  
         # GPU configuration: 2 NVIDIA GPUs per pod
         gpu:
           enabled: true
@@ -56,7 +59,7 @@ spec:
 
         env:
           - name: WANDB_API_KEY
-            value: "wandb_vXXXXXXXXXXXXXXXXXXXXXXXX"  # TODO: Add your Weights & Biases API key
+            value: "wandb_v1_XXXXXXXXXXX"  # TODO: Add your Weights & Biases API key
           - name: NANOCHAT_BASE_DIR
             value: /data/cache/nanochat/
 
