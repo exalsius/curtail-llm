@@ -6,9 +6,9 @@ from datetime import datetime
 from logging import INFO
 
 import exalsius_api_client as exls
-from pilot.logger import log
 
 from pilot.event_log import get_event_log
+from pilot.logger import log
 
 ExlsNodeId = str
 

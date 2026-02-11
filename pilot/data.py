@@ -2,12 +2,12 @@ import os
 from collections import deque
 from logging import INFO
 
-import torch
 import pyarrow.parquet as pq
-from pilot.logger import log
+import torch
 
 from nanochat.common import get_base_dir
 from nanochat.tokenizer import get_tokenizer
+from pilot.logger import log
 
 FlwrNodeId = int
 

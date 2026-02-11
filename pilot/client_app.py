@@ -13,10 +13,10 @@ import torch.multiprocessing as mp
 from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
 from flwr.common import ConfigRecord
-from pilot.logger import init_logger, log
-from nanochat.common import get_base_dir
-from pilot.model import get_model
+
 from pilot.data import fl_shard_dataloader
+from pilot.logger import init_logger, log
+from pilot.model import get_model
 
 
 @contextmanager

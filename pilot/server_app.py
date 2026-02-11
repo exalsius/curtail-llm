@@ -4,11 +4,11 @@ from logging import INFO
 import redis
 import wandb
 from flwr.app import ArrayRecord, ConfigRecord, Context
-from pilot.logger import init_logger, log
 from flwr.server.grid.grid import Grid
 from flwr.serverapp import ServerApp
 
 from pilot.event_log import init_event_log
+from pilot.logger import init_logger, log
 from pilot.model import get_model
 from pilot.provisioner import ExalsiusProvisioner, SubprocessProvisioner
 from pilot.strategy import Client, PilotAvg

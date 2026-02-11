@@ -3,7 +3,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from logging import INFO, DEBUG, WARNING
+from logging import INFO, DEBUG
 from typing import Optional, Iterable
 
 import numpy as np
@@ -12,7 +12,6 @@ import redis.asyncio
 import requests
 import torch
 import wandb
-
 from flwr.common import (
     Array,
     ArrayRecord,
@@ -33,8 +32,8 @@ from flwr.serverapp.strategy.strategy_utils import (
 from redis import Redis
 
 from pilot.data import ShardManager
-from pilot.logger import log
 from pilot.event_log import get_event_log
+from pilot.logger import log
 from pilot.provisioner import Provisioner
 
 FlwrNodeId = int
