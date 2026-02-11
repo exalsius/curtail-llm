@@ -1,0 +1,80 @@
+# Example: DERMS Federation with 3 GPU clients and per-pod persistent storage
+# Usage:
+#   kubectl apply -f examples/federation-derms.yaml -n <namespace>
+---
+apiVersion: flwr.exalsius.ai/v1
+kind: Federation
+metadata:
+  name: federation-derms
+spec:
+  mode: StatefulSet
+  isolationMode: process
+
+  superlink:
+    image: flwr/superlink:1.25.0
+    superexecImage: ghcr.io/exalsius/derms-pilot:latest
+
+    env:
+      - name: WANDB_API_KEY
+        value: "wandb_XXXXXXXXXXXX"  # TODO: Add your Weights & Biases API key
+      - name: NANOCHAT_BASE_DIR
+        value: /data/cache/nanochat/
+
+    volumeClaimTemplates:
+      - metadata:
+          name: superlink-data
+        spec:
+          storageClassName: openebs-hostpath
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 100Gi
+
+    volumeMounts:
+      - name: superlink-data
+        mountPath: /data
+    
+    service:
+      type: NodePort
+
+  supernodes:
+    image: flwr/supernode:1.25.0
+    pools:
+      - name: default
+        replicas: 3
+        images:
+          superexecClientApp: ghcr.io/exalsius/derms-pilot:latest
+
+        nodeConfig:
+          name: "client_{index}"
+          # Each replica gets a unique partition
+          partition-id: "{index}"
+  
+        # GPU configuration: 2 NVIDIA GPUs per pod
+        gpu:
+          enabled: true
+          vendor: nvidia
+          count: 2
+
+        env:
+          - name: WANDB_API_KEY
+            value: "wandb_v1_XXXXXXXXXXX"  # TODO: Add your Weights & Biases API key
+          - name: NANOCHAT_BASE_DIR
+            value: /data/cache/nanochat/
+
+        volumeClaimTemplates:
+          - metadata:
+              name: derms-data
+            spec:
+              storageClassName: openebs-hostpath
+              accessModes:
+                - ReadWriteOnce
+              resources:
+                requests:
+                  storage: 100Gi
+
+        # Mount the per-pod PVC into containers
+        volumeMounts:
+          - name: derms-data
+            mountPath: /data

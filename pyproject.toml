@@ -135,3 +135,7 @@ options.backend.client-resources.num-cpus = 8
 [tool.flwr.federations.local-deployment]
 address = "127.0.0.1:9093"
 insecure = true
+
+[tool.flwr.federations.exls-federation]
+address = "XX.XX.XXX.XX:32248"
+insecure = true

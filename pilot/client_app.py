@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import shutil
 import sys
 import time
 from contextlib import contextmanager
@@ -14,10 +15,33 @@ from flwr.app import ArrayRecord, Context, Message, MetricRecord, RecordDict
 from flwr.clientapp import ClientApp
 from flwr.common import ConfigRecord
 
+from nanochat.common import get_base_dir
+from nanochat.dataset import download_shards
+from nanochat.tokenizer import get_tokenizer
 from pilot.data import fl_shard_dataloader
 from pilot.logger import init_logger, log
 from pilot.model import get_model
 
+
+def ensure_dataset_and_tokenizer(num_shards: int = 240, max_chars: int = 4_000_000_000, vocab_size: int = 65536) -> None:
+    """
+    Idempotent preprocessing: ensure dataset and BPE tokenizer exist under NANOCHAT_BASE_DIR.
+    NANOCHAT_BASE_DIR is read from the environment (set from the outside).
+    If tokenizer already exists, skip. Otherwise download dataset and train tokenizer.
+    """
+    base_dir = get_base_dir()
+
+    tokenizer_pkl = os.path.join(base_dir, "tokenizer", "tokenizer.pkl")
+    if os.path.exists(tokenizer_pkl):
+        vocab = get_tokenizer().get_vocab_size()
+        log(INFO, "Dataset and tokenizer already present (vocab_size=%s), skipping prep.", vocab)
+        return
+    else:
+        # copy tokenizer files to volume mount point (base_dir/tokenizer/...)
+        shutil.copytree("/app/tokenizer", os.path.join(base_dir, "tokenizer"))
+
+    log(INFO, "Preparing dataset and tokenizer under %s (idempotent)", base_dir)
+    download_shards(num_files=num_shards)
 
 @contextmanager
 def log_timing(label: str, metrics: dict = None, key: str = None, rank: int = 0):
@@ -383,6 +407,7 @@ def run_training_process(rank, world_size, msg, context, result_dict, round_star
 
 @app.train()
 def train(msg: Message, context: Context):
+    ensure_dataset_and_tokenizer()
     client_entry_time = time.time()
     num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
 
