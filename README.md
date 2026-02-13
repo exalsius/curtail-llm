@@ -1,7 +1,8 @@
-# Pilot ✈
+# Exalsius Pilot
 
-Federated nanochat pretraining on volatile FL clients.
+Distributed LLM pretraining during renewable curtailment windows using federated learning.
 
+This prototype trains a 561M-parameter transformer ([nanochat](https://github.com/KellerJordan/modded-nanogpt) d20) across geographically distributed GPU clusters, scheduling training only when regional renewable curtailment is detected. Sites coordinate via the [Flower](https://flower.ai/) federated learning framework, with curtailment periods derived from real-world marginal carbon intensity traces provided by [WattTime](https://watttime.org/).
 
 ## Setup
 
@@ -37,7 +38,7 @@ python -c "from nanochat.tokenizer import get_tokenizer; print(f'Vocab size: {ge
 
 ### Redis Setup (head node only)
 
-The system uses Redis for coordination between server and clients. 
+The system uses Redis for coordination between server and clients.
 Redis must be accessible by all nodes, run via:
 
 ```bash
@@ -47,25 +48,17 @@ redis-server --daemonize yes
 redis-cli ping
 ```
 
-## Quick Start
-
-```
-echo "set -g mouse on" >> ~/.tmux.conf
-tmux source-file ~/.tmux.conf
-```
-
-### Deployment
+## Deployment
 
 Deploy across multiple physical nodes:
 
 0. Make sure Redis is running.
 ```bash
 redis-server --daemonize yes
-# docker run -d -p 6379:6379 redis:latest
 redis-cli ping
 ```
 
-1. Vessim
+1. Start the energy simulation (Vessim):
 ```bash
 tmux new -A -s vessim
 
@@ -76,17 +69,15 @@ python energy_simulation.py
 ```
 
 2. Start Flower SuperLink (coordinator):
-
 ```bash
 tmux new -A -s superlink
 
 cd /workspace/pilot
 source .venv/bin/activate
-export WANDB_API_KEY=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
+export WANDB_API_KEY=<your-key>
 
 flower-superlink --insecure
 ```
-
 
 3. Start SuperNodes (workers) on each GPU:
 ```bash
@@ -100,8 +91,8 @@ export NANOCHAT_BASE_DIR=/workspace/cache/nanochat/
 CUDA_VISIBLE_DEVICES=0,1 flower-supernode --insecure \
   --superlink 127.0.0.1:9092 \
   --clientappio-api-address 127.0.0.1:9094 \
-  --node-config 'name="client_0" partition-id=0' 
-
+  --node-config 'name="client_0" partition-id=0'
+```
 
 ```bash
 # Client 1
@@ -117,7 +108,6 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 flower-supernode --insecure \
   --node-config 'name="client_1" partition-id=1'
 ```
 
-
 4. Run the Flower app:
 ```bash
 cd /workspace/pilot
@@ -125,10 +115,18 @@ source .venv/bin/activate
 flwr run . local-deployment --stream
 ```
 
-You can override config values from command line:
+You can override config values from the command line:
 
 ```bash
 flwr run . local-deployment --run-config "lr=0.0005" --stream
+```
+
+### Local Simulation
+
+Best for development and testing:
+
+```bash
+flwr run . local-simulation-gpu --stream
 ```
 
 ### Vanilla nanochat Baseline
@@ -145,15 +143,6 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --standalone --nproc_per_node=4 \
   --device_batch_size 8 --run baseline
 ```
 
-### Local Simulation
-
-Best for development and testing:
-
-```bash
-flwr run . local-simulation-gpu --stream
-```
-
-
 ## Evaluation
 
 Evaluate a trained checkpoint:
@@ -161,24 +150,3 @@ Evaluate a trained checkpoint:
 ```bash
 python scripts/base_eval.py --checkpoint final_model.pt
 ```
-
-
-## Install Gemini on Cluster
-
-```bash
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-\. "$HOME/.nvm/nvm.sh"
-nvm install 24
-npm install -g @google/gemini-cli
-```
-
-
-
-# TODOs
-
-- Hyperparameter tuning for FL lr
-- Test dynamic joining / leaving
-- Baseline vs single client
-
-
-do log the gradient norm! Do you think gradient clipping makes sense here?

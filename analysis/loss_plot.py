@@ -32,17 +32,18 @@ def _():
         segments.append((times[seg_start:], raw[seg_start:], smoothed[seg_start:]))
         return segments
 
-    def style_time_axes(axes, xlim_hours):
+    def style_time_axes(axes, xlim_hours, walltime=True):
         axes[-1].set_xlabel("Runtime (hours)", fontsize=FONTSIZE)
         axes[-1].set_xlim(0, xlim_hours)
-        _secax = axes[0].secondary_xaxis('top', functions=(lambda h: h, lambda h: h))
-        _secax.set_xlabel("Walltime (UTC)", fontsize=FONTSIZE)
-        _secax.tick_params(labelsize=FONTSIZE)
-        _secax.xaxis.set_major_formatter(plt.FuncFormatter(lambda h, _: f"{(17 + int(h)) % 24}:{int((h % 1) * 60):02d}"))
+        if walltime:
+            _secax = axes[0].secondary_xaxis('top', functions=(lambda h: h, lambda h: h))
+            _secax.set_xlabel("Walltime (UTC)", fontsize=FONTSIZE)
+            _secax.tick_params(labelsize=FONTSIZE)
+            _secax.xaxis.set_major_formatter(plt.FuncFormatter(lambda h, _: f"{(17 + int(h)) % 24}:{int((h % 1) * 60):02d}"))
         for _ax in axes:
             _ax.tick_params(labelsize=FONTSIZE)
 
-    COLORS = {"ours": "#ff7f0e", "bl1": "#333333", "bl2": "#777777"}
+    COLORS = {"ours": "#ff7f0e", "bl1": "#333333", "bl2": "#999"}
 
     client_dfs = [pd.read_csv(f"result/exp1/client_{i}.csv") for i in range(3)]
     return (
@@ -74,7 +75,7 @@ def _(
     HIGHLIGHT_COLOR = "#f6f8f6"
 
 
-    _fig, axes = plt.subplots(4, 1, figsize=(7, 6), sharex=True)
+    _fig, axes = plt.subplots(4, 1, figsize=(7, 5), sharex=True)
 
     # MCI plot (first subplot)
     mci = pd.read_csv("mci.csv", parse_dates=["point_time"], index_col="point_time")
@@ -102,7 +103,8 @@ def _(
             _ax.plot(_seg_t / 3600, _seg_raw, color=_color, alpha=0.2, linewidth=1)
             _ax.plot(_seg_t / 3600, _seg_smooth, color=_color, alpha=1.0, linewidth=1.5)
 
-        _ax.set_ylabel(f"{_label}\n(train loss)", fontsize=FONTSIZE)
+        _ax.set_ylabel("train loss", fontsize=FONTSIZE)
+        _ax.set_title(_label, fontsize=FONTSIZE, loc='right', y=0.7, x=0.99)
         _ax.grid(True, linestyle='--', alpha=0.4)
         _ax.set_ylim(2.5, 5.0)
 
@@ -133,24 +135,25 @@ def _(
     plt.tight_layout()
 
     _add_inset(
-        pos=[0.16, 0.39, 0.20, 0.10], client=0,
+        pos=[0.16, 0.40, 0.20, 0.10], client=0,
         xlim=(7000/3600, 9500/3600), ylim=(2.9, 3.5),
-        title="workers get (de)provisioned\ndepending on carbon intensity",
+        title="training stops if no sites are\nbelow the curtailment threshold",
         indicator_ax=axes[1],
     )
     _add_inset(
-        pos=[0.43, 0.39, 0.20, 0.10], client=0,
+        pos=[0.43, 0.40, 0.20, 0.10], client=0,
         xlim=(15500/3600, 18000/3600), ylim=(2.8, 3.4),
-        title="we dynamically switch\nbetween \"centralized\"\nand federated learning",
+        title="if more than one site is cur-\ntailed, training switches to FL",
         indicator_ax=axes[1],
     )
     _add_inset(
-        pos=[0.43, 0.22, 0.20, 0.10], client=2,
+        pos=[0.43, 0.235, 0.20, 0.10], client=2,
         xlim=(22700/3600, 25200/3600), ylim=(2.8, 3.4),
         title="",
         indicator_ax=axes[3],
     )
 
+    _fig.subplots_adjust(hspace=0.15)
     _fig.align_labels()
     _fig.savefig("figures/loss_mci.pdf", bbox_inches="tight")
     _fig
@@ -165,17 +168,19 @@ def _(COLORS, FONTSIZE, client_dfs, ema, pd, plt, style_time_axes):
         pd.DataFrame({"time": _df["time"], "ppl": _df["perplexity"]}) for _df in client_dfs
     ]).groupby("time").mean().reset_index().sort_values("time")
 
-    _fig, _ax = plt.subplots(figsize=(3.5, 2.5))
+    _fig, _ax = plt.subplots(figsize=(4, 2.5))
 
     def _plot(ax, hours, raw, color, label):
+        smoothed = ema(raw, 0.99)
         ax.plot(hours, raw, color=color, alpha=0.1, linewidth=1)
-        ax.plot(hours, ema(raw, 0.99), color=color, linewidth=1, label=label)
+        ax.plot(hours, smoothed, color=color, linewidth=1, label=label)
+        ax.plot(hours[-1], smoothed[-1], 'o', color=color, markersize=3)
 
-    _plot(_ax, _bl1["time"] / 3600, _bl1["perplexity"].values, COLORS["bl1"], "Centralized baseline")
-    _plot(_ax, _bl2["time"] / 3600, _bl2["perplexity"].values, COLORS["bl2"], "2-worker FL baseline")
-    _plot(_ax, _ours["time"] / 3600, _ours["ppl"].values, COLORS["ours"], "Ours")
+    _plot(_ax, (_bl1["time"] / 3600).values, _bl1["perplexity"].values, COLORS["bl1"], "Centralized")
+    _plot(_ax, (_bl2["time"] / 3600).values, _bl2["perplexity"].values, COLORS["bl2"], "Two-site FL")
+    _plot(_ax, (_ours["time"] / 3600).values, _ours["ppl"].values, COLORS["ours"], "Ours")
 
-    _ax.set_ylabel("Perplexity")
+    _ax.set_ylabel("Perplexity", fontsize=FONTSIZE)
     _ax.set_ylim(10, 50)
     _ax.legend(fontsize=FONTSIZE)
     _ax.grid(True, linestyle='--', alpha=0.6)
@@ -183,7 +188,7 @@ def _(COLORS, FONTSIZE, client_dfs, ema, pd, plt, style_time_axes):
     _ax.axhline(y=14.7, color='gray', linestyle='--', linewidth=1, alpha=0.7)
 
 
-    style_time_axes([_ax], 18)
+    style_time_axes([_ax], 18, walltime=False)
 
     _fig.savefig("figures/perplexity.pdf", bbox_inches="tight")
     _fig
@@ -266,7 +271,7 @@ def _(
 
     hours = grid / 3600
 
-    _fig, _axes = plt.subplots(2, 1, figsize=(7, 3.5), sharex=True)
+    _fig, _axes = plt.subplots(2, 1, figsize=(5, 3.07), sharex=True)
 
     _exp_mask = grid <= exp_end
     _exp_h = hours[_exp_mask]
@@ -291,18 +296,122 @@ def _(
     style_time_axes(_axes, max_time / 3600)
 
     _fig.align_labels()
-    plt.tight_layout()
+    _fig.tight_layout()
+    _fig.subplots_adjust(hspace=0.15)
     _fig.savefig("figures/power_emissions.pdf", bbox_inches="tight")
     _fig
     return (
         POWER_TRAIN,
+        bl_emission_rates,
         bl_power,
         bl_total_emissions,
         dt,
+        exp_emission_rate,
+        exp_end,
         exp_total_emissions,
         exp_total_power,
+        grid,
+        max_time,
+        region_colors,
         region_labels,
+        region_list,
     )
+
+
+@app.cell
+def _(
+    COLORS,
+    FONTSIZE,
+    bl_emission_rates,
+    bl_total_emissions,
+    exp_emission_rate,
+    exp_end,
+    exp_total_emissions,
+    grid,
+    max_time,
+    plt,
+    region_colors,
+    region_labels,
+    region_list,
+    style_time_axes,
+):
+    _hours = grid / 3600
+    _exp_mask = grid <= exp_end
+    _exp_h = _hours[_exp_mask]
+    _exp_em = (exp_emission_rate / 1000)[_exp_mask]
+
+    _fig, (_ax, _ax_bar) = plt.subplots(1, 2, figsize=(8.5, 2), gridspec_kw={"width_ratios": [2.5, 1], "wspace": 0.25})
+
+    for _r in region_list:
+        _vals = bl_emission_rates[_r] / 1000
+        _ax.plot(_hours, _vals, color=region_colors[_r], linestyle="--", linewidth=1, label=f"{region_labels[_r]}")
+    _ax.plot(_exp_h, _exp_em, color=COLORS["ours"], linewidth=1.5, label="Ours")
+    _ax.plot(_exp_h[-1], _exp_em[-1], 'o', color=COLORS["ours"], markersize=3)
+
+    _ax.set_ylabel("Emission rate (kgCO\u2082/h)", fontsize=FONTSIZE)
+    _ax.grid(True, linestyle="--", alpha=0.4)
+
+    _ax.legend(loc="upper left", fontsize=8, ncol=3, bbox_to_anchor=(-0, 1.29), frameon=False)
+
+    style_time_axes([_ax], max_time / 3600, walltime=False)
+
+    _bar_labels = [region_labels[_r] for _r in region_list] + ["Ours"]
+    _bar_values = [bl_total_emissions[_r] for _r in region_list] + [exp_total_emissions]
+    _bar_colors = [region_colors[_r] for _r in region_list] + [COLORS["ours"]]
+    _bars = _ax_bar.bar(_bar_labels, _bar_values, color=_bar_colors, width=0.7)
+    for _bar, _val in zip(_bars, _bar_values):
+        _ax_bar.text(_bar.get_x() + _bar.get_width() / 2, _bar.get_height(), f"{_val:.1f}", ha="center", va="bottom", fontsize=7)
+    _ax_bar.set_ylabel("Total emissions (kgCO\u2082)", fontsize=FONTSIZE)
+    _ax_bar.tick_params(labelsize=8, axis="x", labelrotation=30, pad=2)
+    plt.setp(_ax_bar.get_xticklabels(), ha="right")
+    _ax_bar.tick_params(labelsize=FONTSIZE, axis="y")
+    _ax_bar.grid(True, linestyle="--", alpha=0.4, axis="y")
+    _ax_bar.set_ylim(0, max(_bar_values) * 1.1)
+
+    # _fig.tight_layout()
+    _fig.savefig("figures/emissions.pdf", bbox_inches="tight")
+    _fig
+    return
+
+
+@app.cell
+def _(
+    COLORS,
+    FONTSIZE,
+    bl_total_emissions,
+    exp_emission_rate,
+    exp_end,
+    exp_total_emissions,
+    grid,
+    plt,
+    region_colors,
+    region_labels,
+    region_list,
+):
+    _hours = grid / 3600
+    _exp_mask = grid <= exp_end
+    _exp_h = _hours[_exp_mask]
+    _exp_em = (exp_emission_rate / 1000)[_exp_mask]
+
+    _fig, _ax_bar = plt.subplots(1, 1, figsize=(4, 2.5))
+
+    _bar_labels = [region_labels[_r].replace(" ", "\n") for _r in region_list] + ["Ours\n(distributed)"]
+    _bar_values = [bl_total_emissions[_r] for _r in region_list] + [exp_total_emissions]
+    _bar_colors = [region_colors[_r] for _r in region_list] + [COLORS["ours"]]
+    _bars = _ax_bar.bar(_bar_labels, _bar_values, color=_bar_colors, width=0.7)
+    for _bar, _val in zip(_bars, _bar_values):
+        _ax_bar.text(_bar.get_x() + _bar.get_width() / 2, _bar.get_height() + 0.3, f"{_val:.1f}", ha="center", va="bottom", fontsize=9)
+    _ax_bar.set_ylabel("Total emissions (kgCO\u2082)", fontsize=FONTSIZE)
+    _ax_bar.tick_params(labelsize=8, axis="x")
+    #plt.setp(_ax_bar.get_xticklabels(), ha="right")
+    _ax_bar.tick_params(labelsize=FONTSIZE, axis="y")
+    _ax_bar.grid(True, linestyle="--", alpha=0.4, axis="y")
+    _ax_bar.set_ylim(0, max(_bar_values) * 1.1)
+
+    # _fig.tight_layout()
+    _fig.savefig("figures/emissions_short.pdf", bbox_inches="tight")
+    _fig
+    return
 
 
 @app.cell
@@ -310,7 +419,9 @@ def _(
     POWER_TRAIN,
     bl_power,
     bl_total_emissions,
+    client_dfs,
     dt,
+    ema,
     exp_total_emissions,
     exp_total_power,
     mo,
@@ -319,6 +430,7 @@ def _(
     region_labels,
     segment,
 ):
+    _bl1_df = pd.read_csv("result/baseline_1_client.csv")
     _bl2_df = pd.read_csv("result/baseline_2_clients.csv")
     _bl2_t = _bl2_df["time"].values.astype(float)
     _bl2_segs = segment(_bl2_t, _bl2_t, _bl2_t)
@@ -331,27 +443,47 @@ def _(
     bl_energy = np.sum(bl_power) * dt / 3600
     bl2_energy = np.sum(_bl2_power) * 60 / 3600
 
-    _rows = [
-        ("1-Client Baseline", f"{bl_energy:.1f}", "\u2014"),
-        ("2-Client Baseline", f"{bl2_energy:.1f}", "\u2014"),
-        ("Experiment (3 Clients)", f"{exp_energy:.1f}", "\u2014"),
-    ]
-    _energy_table = "| Scenario | Energy (kWh) |\n|---|---|\n"
-    for _name, _e, _ in _rows:
-        _energy_table += f"| {_name} | {_e} |\n"
+    _EMA_ALPHA = 0.99
+    _bl1_t = _bl1_df["time"].values.astype(float)
+    _bl1_segs = segment(_bl1_t, _bl1_t, _bl1_t)
+    _bl1_runtime = _bl1_t.max() / 3600
+    _bl2_runtime = _bl2_t.max() / 3600
+    _ours_ppl = pd.concat([
+        pd.DataFrame({"time": _df["time"], "ppl": _df["perplexity"]}) for _df in client_dfs
+    ]).groupby("time").mean().reset_index().sort_values("time")
+    _exp_runtime = _ours_ppl["time"].max() / 3600
+
+    _bl1_gpu_h = sum((_s[0][-1] - _s[0][0]) for _s in _bl1_segs) / 3600
+    _bl2_gpu_h = sum((_s[0][-1] - _s[0][0]) for _s in _bl2_segs) / 3600 * 2
+    _ours_gpu_h = 0
+    for _df in client_dfs:
+        _ct = _df["time"].values.astype(float)
+        _csegs = segment(_ct, _ct, _ct)
+        _ours_gpu_h += sum((_s[0][-1] - _s[0][0]) for _s in _csegs) / 3600
+
+    _bl1_ppl_smooth = ema(_bl1_df["perplexity"].values, _EMA_ALPHA)
+    _bl2_ppl_smooth = ema(_bl2_df["perplexity"].values, _EMA_ALPHA)
+    _ours_ppl_smooth = ema(_ours_ppl["ppl"].values, _EMA_ALPHA)
+
+    _table = "| Scenario | Runtime (h) | GPU Hours | Energy (kWh) | Best PPL (EMA) |\n|---|---|---|---|---|\n"
+    _table += f"| Centralized | {_bl1_runtime:.1f} | {_bl1_gpu_h:.1f} | {bl_energy:.1f} | {_bl1_ppl_smooth.min():.1f} |\n"
+    _table += f"| 2-Client FL | {_bl2_runtime:.1f} | {_bl2_gpu_h:.1f} | {bl2_energy:.1f} | {_bl2_ppl_smooth.min():.1f} |\n"
+    _table += f"| Ours | {_exp_runtime:.1f} | {_ours_gpu_h:.1f} | {exp_energy:.1f} | {_ours_ppl_smooth.min():.1f} |\n"
 
     _carbon_table = "| Scenario | Carbon (kgCO\u2082) |\n|---|---|\n"
     for _r, _label in region_labels.items():
-        _carbon_table += f"| 1-Client BL in {_label} | {bl_total_emissions[_r]:.2f} |\n"
+        _carbon_table += f"| Centralized {_label} | {bl_total_emissions[_r]:.2f} |\n"
     _carbon_table += f"| **Ours** | **{exp_total_emissions:.2f}** |\n"
 
     _pct_min = min(exp_total_emissions / bl_total_emissions[_r] * 100 for _r in region_labels)
     _pct_max = max(exp_total_emissions / bl_total_emissions[_r] * 100 for _r in region_labels)
 
     mo.md(f"""
-    ### Energy Footprint
+    ### Training Summary
 
-    {_energy_table}
+    {_table}
+
+    *Best PPL is the minimum EMA-smoothed (α={_EMA_ALPHA}) perplexity reached during training. The EMA effective window is ~{int(1/(1-_EMA_ALPHA))} steps, so Best PPL approximates the best ~{int(1/(1-_EMA_ALPHA))}-batch moving average. GPU hours = sum of per-GPU training time across all clients.*
 
     ### Carbon Footprint
 
