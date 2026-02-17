@@ -31,7 +31,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
+          file: ./deployment/Dockerfile
           push: true
           tags: |
             ghcr.io/exalsius/derms-pilot:latest

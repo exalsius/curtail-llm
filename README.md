@@ -1,8 +1,19 @@
-# Exalsius Pilot
+# curtail-llm
 
-Distributed LLM pretraining during renewable curtailment windows using federated learning.
+Distributed LLM pretraining during renewable curtailment windows.
 
-This prototype trains a 561M-parameter transformer ([nanochat](https://github.com/KellerJordan/modded-nanogpt) d20) across geographically distributed GPU clusters, scheduling training only when regional renewable curtailment is detected. Sites coordinate via the [Flower](https://flower.ai/) federated learning framework, with curtailment periods derived from real-world marginal carbon intensity traces provided by [WattTime](https://watttime.org/).
+This prototype trains a 561M-parameter transformer ([nanochat](https://github.com/KellerJordan/modded-nanogpt) d20) across geographically distributed GPU clusters, scheduling training only when regional renewable curtailment is detected. 
+- Training is coordinated via the [Flower](https://flower.ai/) federated learning framework
+- Nodes are elastically added/removed using [Exalsius](https://www.exalsius.ai/) and a custom [Kubernetes operator](https://github.com/exalsius/flower-operator)
+- Energy system dynamics are simulated by [Vessim](https://vessim.readthedocs.io/en/latest/), with curtailment periods derived from real-world marginal carbon intensity traces provided by [WattTime](https://watttime.org/).
+
+Depending on how many sites experience curtailment at any given time, the system operates in one of three regimes:
+- **No curtailment** -- Training is paused.
+- **One site curtailed** -- That site trains locally using standard data-parallel training.
+- **Multiple sites curtailed** -- Sites train concurrently and synchronize periodically via federated aggregation.
+
+Even when curtailment windows are rare and sporadic, spreading training across multiple regions recovers enough compute to match single-site training quality while cutting operational carbon emissions to 5--12% of baseline levels.
+
 
 ## Setup
 
