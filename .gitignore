@@ -8,6 +8,7 @@ __pycache__
 .claude
 .flwr
 CLAUDE.md
+GEMINI.md
 
 build/
 dist/
@@ -29,5 +30,5 @@ dump.rdb
 rustbpe/target/
 
 # Experiments
-./results
+/results
 logs

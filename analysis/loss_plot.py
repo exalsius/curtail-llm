@@ -45,17 +45,36 @@ def _():
 
     COLORS = {"ours": "#ff7f0e", "bl1": "#333333", "bl2": "#999"}
 
-    client_dfs = [pd.read_csv(f"result/exp1/client_{i}.csv") for i in range(3)]
+    client_dfs = [pd.read_csv(f"evaluation/results/exp1/client_{i}.csv") for i in range(3)]
+    bl1_df = pd.read_csv("evaluation/results/baseline_1_client.csv")
+    bl2_df = pd.read_csv("evaluation/results/baseline_2_clients.csv")
+    events_df = pd.read_csv("evaluation/results/exp1/events.csv")
+    mci = pd.read_csv("evaluation/mci.csv", parse_dates=["point_time"], index_col="point_time")
+
+    ours_ppl = pd.concat([
+        pd.DataFrame({"time": _df["time"], "ppl": _df["perplexity"]}) for _df in client_dfs
+    ]).groupby("time").mean().reset_index().sort_values("time")
+
+    region_labels = {"CAISO_NORTH": "California", "SPP_TX": "Texas", "NEM_SA": "South Australia", "DE": "Germany"}
+    region_colors = {"CAISO_NORTH": "#1f77b4", "SPP_TX": "#d62728", "NEM_SA": "#2ca02c", "DE": "#9467bd"}
+    region_list = ["CAISO_NORTH", "SPP_TX", "NEM_SA", "DE"]
     return (
         COLORS,
         FONTSIZE,
         START_TIME,
+        bl1_df,
+        bl2_df,
         client_dfs,
         ema,
+        events_df,
+        mci,
         mo,
         np,
-        pd,
+        ours_ppl,
         plt,
+        region_colors,
+        region_labels,
+        region_list,
         segment,
         style_time_axes,
     )
@@ -67,20 +86,18 @@ def _(
     START_TIME,
     client_dfs,
     ema,
-    pd,
+    mci,
     plt,
+    region_colors,
+    region_labels,
+    region_list,
     segment,
     style_time_axes,
 ):
-    HIGHLIGHT_COLOR = "#f6f8f6"
-
-
     _fig, axes = plt.subplots(4, 1, figsize=(7, 5), sharex=True)
 
-    # MCI plot (first subplot)
-    mci = pd.read_csv("mci.csv", parse_dates=["point_time"], index_col="point_time")
     mci_hours = (mci.index - START_TIME).total_seconds() / 3600
-    regions = {"CAISO_NORTH": ("California", "#1f77b4"), "SPP_TX": ("Texas", "#d62728"), "NEM_SA": ("South Australia", "#2ca02c"), "DE": ("Germany", "#9467bd")}
+    regions = {r: (region_labels[r], region_colors[r]) for r in region_list}
 
     for _region, (_label, _color) in regions.items():
         _mask = mci[_region].notna()
@@ -157,17 +174,11 @@ def _(
     _fig.align_labels()
     _fig.savefig("figures/loss_mci.pdf", bbox_inches="tight")
     _fig
-    return (mci,)
+    return
 
 
 @app.cell
-def _(COLORS, FONTSIZE, client_dfs, ema, pd, plt, style_time_axes):
-    _bl1 = pd.read_csv("result/baseline_1_client.csv")
-    _bl2 = pd.read_csv("result/baseline_2_clients.csv")
-    _ours = pd.concat([
-        pd.DataFrame({"time": _df["time"], "ppl": _df["perplexity"]}) for _df in client_dfs
-    ]).groupby("time").mean().reset_index().sort_values("time")
-
+def _(COLORS, FONTSIZE, bl1_df, bl2_df, ema, ours_ppl, plt, style_time_axes):
     _fig, _ax = plt.subplots(figsize=(4, 2.5))
 
     def _plot(ax, hours, raw, color, label):
@@ -176,9 +187,9 @@ def _(COLORS, FONTSIZE, client_dfs, ema, pd, plt, style_time_axes):
         ax.plot(hours, smoothed, color=color, linewidth=1, label=label)
         ax.plot(hours[-1], smoothed[-1], 'o', color=color, markersize=3)
 
-    _plot(_ax, (_bl1["time"] / 3600).values, _bl1["perplexity"].values, COLORS["bl1"], "Centralized")
-    _plot(_ax, (_bl2["time"] / 3600).values, _bl2["perplexity"].values, COLORS["bl2"], "Two-site FL")
-    _plot(_ax, (_ours["time"] / 3600).values, _ours["ppl"].values, COLORS["ours"], "Ours")
+    _plot(_ax, (bl1_df["time"] / 3600).values, bl1_df["perplexity"].values, COLORS["bl1"], "Centralized")
+    _plot(_ax, (bl2_df["time"] / 3600).values, bl2_df["perplexity"].values, COLORS["bl2"], "Two-site FL")
+    _plot(_ax, (ours_ppl["time"] / 3600).values, ours_ppl["ppl"].values, COLORS["ours"], "Ours")
 
     _ax.set_ylabel("Perplexity", fontsize=FONTSIZE)
     _ax.set_ylim(10, 50)
@@ -186,7 +197,6 @@ def _(COLORS, FONTSIZE, client_dfs, ema, pd, plt, style_time_axes):
     _ax.grid(True, linestyle='--', alpha=0.6)
 
     _ax.axhline(y=14.7, color='gray', linestyle='--', linewidth=1, alpha=0.7)
-
 
     style_time_axes([_ax], 18, walltime=False)
 
@@ -200,32 +210,32 @@ def _(
     COLORS,
     FONTSIZE,
     START_TIME,
+    bl1_df,
     client_dfs,
+    events_df,
     mci,
     np,
-    pd,
     plt,
+    region_colors,
+    region_labels,
+    region_list,
     segment,
     style_time_axes,
 ):
     POWER_IDLE = 0.468
     POWER_TRAIN = 2.024
 
-    events = pd.read_csv("result/exp1/events.csv")
-    baseline_df = pd.read_csv("result/baseline_1_client.csv")
-
     client_regions = {"client_0": "CAISO_NORTH", "client_1": "SPP_TX", "client_2": "NEM_SA"}
-    region_list = ["CAISO_NORTH", "SPP_TX", "NEM_SA", "DE"]
 
     prov_windows = {f"client_{i}": [] for i in range(3)}
     prov_start = {}
-    for _, row in events.iterrows():
+    for _, row in events_df.iterrows():
         evt, client = row["event_type"], row["client"]
         if evt == "PROVISION_COMPLETE":
             prov_start[client] = row["elapsed_s"]
         elif evt == "DEPROVISION" and client in prov_start:
             prov_windows[client].append((prov_start.pop(client), row["elapsed_s"]))
-    exp_end = events["elapsed_s"].max()
+    exp_end = events_df["elapsed_s"].max()
     for client, start in prov_start.items():
         prov_windows[client].append((start, exp_end))
 
@@ -235,7 +245,7 @@ def _(
         _segs = segment(_t, _t, _t)
         train_segments[f"client_{_i}"] = [(_s[0][0], _s[0][-1]) for _s in _segs]
 
-    max_time = max(baseline_df["time"].astype(float).max(), exp_end)
+    max_time = max(bl1_df["time"].astype(float).max(), exp_end)
     dt = 60
     grid = np.arange(0, max_time + dt, dt)
 
@@ -250,7 +260,7 @@ def _(
     exp_powers = {c: get_power(c) for c in client_regions}
     exp_total_power = sum(exp_powers.values())
 
-    bl_mask = (grid >= baseline_df["time"].astype(float).min()) & (grid <= baseline_df["time"].astype(float).max())
+    bl_mask = (grid >= bl1_df["time"].astype(float).min()) & (grid <= bl1_df["time"].astype(float).max())
     bl_power = np.where(bl_mask, POWER_TRAIN, 0.0)
 
     mci_elapsed = (mci.index - START_TIME).total_seconds().values
@@ -260,8 +270,6 @@ def _(
 
     exp_emission_rate = sum(exp_powers[c] * mci_on_grid[r] for c, r in client_regions.items())
 
-    region_labels = {"CAISO_NORTH": "California", "SPP_TX": "Texas", "NEM_SA": "South Australia", "DE": "Germany"}
-    region_colors = {"CAISO_NORTH": "#1f77b4", "SPP_TX": "#d62728", "NEM_SA": "#2ca02c", "DE": "#9467bd"}
     bl_emission_rates = {r: bl_power * mci_on_grid[r] for r in region_list}
     bl_cum_emissions = {r: np.cumsum(bl_emission_rates[r]) * dt / 3600 / 1000 for r in region_list}
     exp_cum_emissions = np.cumsum(exp_emission_rate) * dt / 3600 / 1000
@@ -312,9 +320,6 @@ def _(
         exp_total_power,
         grid,
         max_time,
-        region_colors,
-        region_labels,
-        region_list,
     )
 
 
@@ -417,6 +422,8 @@ def _(
 @app.cell
 def _(
     POWER_TRAIN,
+    bl1_df,
+    bl2_df,
     bl_power,
     bl_total_emissions,
     client_dfs,
@@ -426,13 +433,11 @@ def _(
     exp_total_power,
     mo,
     np,
-    pd,
+    ours_ppl,
     region_labels,
     segment,
 ):
-    _bl1_df = pd.read_csv("result/baseline_1_client.csv")
-    _bl2_df = pd.read_csv("result/baseline_2_clients.csv")
-    _bl2_t = _bl2_df["time"].values.astype(float)
+    _bl2_t = bl2_df["time"].values.astype(float)
     _bl2_segs = segment(_bl2_t, _bl2_t, _bl2_t)
     _grid = np.arange(0, _bl2_t.max() + 60, 60)
     _bl2_power = np.zeros(len(_grid))
@@ -444,14 +449,11 @@ def _(
     bl2_energy = np.sum(_bl2_power) * 60 / 3600
 
     _EMA_ALPHA = 0.99
-    _bl1_t = _bl1_df["time"].values.astype(float)
+    _bl1_t = bl1_df["time"].values.astype(float)
     _bl1_segs = segment(_bl1_t, _bl1_t, _bl1_t)
     _bl1_runtime = _bl1_t.max() / 3600
     _bl2_runtime = _bl2_t.max() / 3600
-    _ours_ppl = pd.concat([
-        pd.DataFrame({"time": _df["time"], "ppl": _df["perplexity"]}) for _df in client_dfs
-    ]).groupby("time").mean().reset_index().sort_values("time")
-    _exp_runtime = _ours_ppl["time"].max() / 3600
+    _exp_runtime = ours_ppl["time"].max() / 3600
 
     _bl1_gpu_h = sum((_s[0][-1] - _s[0][0]) for _s in _bl1_segs) / 3600
     _bl2_gpu_h = sum((_s[0][-1] - _s[0][0]) for _s in _bl2_segs) / 3600 * 2
@@ -461,9 +463,9 @@ def _(
         _csegs = segment(_ct, _ct, _ct)
         _ours_gpu_h += sum((_s[0][-1] - _s[0][0]) for _s in _csegs) / 3600
 
-    _bl1_ppl_smooth = ema(_bl1_df["perplexity"].values, _EMA_ALPHA)
-    _bl2_ppl_smooth = ema(_bl2_df["perplexity"].values, _EMA_ALPHA)
-    _ours_ppl_smooth = ema(_ours_ppl["ppl"].values, _EMA_ALPHA)
+    _bl1_ppl_smooth = ema(bl1_df["perplexity"].values, _EMA_ALPHA)
+    _bl2_ppl_smooth = ema(bl2_df["perplexity"].values, _EMA_ALPHA)
+    _ours_ppl_smooth = ema(ours_ppl["ppl"].values, _EMA_ALPHA)
 
     _table = "| Scenario | Runtime (h) | GPU Hours | Energy (kWh) | Best PPL (EMA) |\n|---|---|---|---|---|\n"
     _table += f"| Centralized | {_bl1_runtime:.1f} | {_bl1_gpu_h:.1f} | {bl_energy:.1f} | {_bl1_ppl_smooth.min():.1f} |\n"
