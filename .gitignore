@@ -29,5 +29,5 @@ dump.rdb
 rustbpe/target/
 
 # Experiments
-results
+./results
 logs
