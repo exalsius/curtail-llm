@@ -45,6 +45,29 @@ def _():
 
     COLORS = {"ours": "#ff7f0e", "bl1": "#333333", "bl2": "#999"}
 
+    def draw_bar(ax, labels, values, colors, ylabel, fmt="{:.1f}", width=0.7, ylim_factor=1.15, offset=0.5, ann_fontsize=9, horizontal=False):
+        if horizontal:
+            bars = ax.barh(labels, values, color=colors, height=width)
+            for bar, val in zip(bars, values):
+                ax.text(bar.get_width() + offset, bar.get_y() + bar.get_height() / 2,
+                        fmt.format(val), ha="left", va="center", fontsize=ann_fontsize)
+            ax.set_xlabel(ylabel, fontsize=FONTSIZE)
+            ax.tick_params(labelsize=FONTSIZE, axis="y")
+            ax.tick_params(labelsize=FONTSIZE, axis="x")
+            ax.grid(True, linestyle="--", alpha=0.4, axis="x")
+            ax.set_xlim(0, max(values) * ylim_factor)
+        else:
+            bars = ax.bar(labels, values, color=colors, width=width)
+            for bar, val in zip(bars, values):
+                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + offset,
+                        fmt.format(val), ha="center", va="bottom", fontsize=ann_fontsize)
+            ax.set_ylabel(ylabel, fontsize=FONTSIZE)
+            ax.tick_params(labelsize=8, labelrotation=30, axis="x")
+            ax.tick_params(labelsize=FONTSIZE, axis="y")
+            ax.grid(True, linestyle="--", alpha=0.4, axis="y")
+            ax.set_ylim(0, max(values) * ylim_factor)
+            plt.setp(ax.get_xticklabels(), ha="right")
+
     client_dfs = [pd.read_csv(f"evaluation/results/exp1/client_{i}.csv") for i in range(3)]
     bl1_df = pd.read_csv("evaluation/results/baseline_1_client.csv")
     bl2_df = pd.read_csv("evaluation/results/baseline_2_clients.csv")
@@ -65,6 +88,7 @@ def _():
         bl1_df,
         bl2_df,
         client_dfs,
+        draw_bar,
         ema,
         events_df,
         mci,
@@ -94,7 +118,7 @@ def _(
     segment,
     style_time_axes,
 ):
-    _fig, axes = plt.subplots(4, 1, figsize=(7, 5), sharex=True)
+    _fig, axes = plt.subplots(4, 1, figsize=(7, 5), sharex=True, gridspec_kw=dict(height_ratios=[1.2,1,1,1]))
 
     mci_hours = (mci.index - START_TIME).total_seconds() / 3600
     regions = {r: (region_labels[r], region_colors[r]) for r in region_list}
@@ -103,9 +127,9 @@ def _(
         _mask = mci[_region].notna()
         axes[0].step(mci_hours[_mask], mci[_region][_mask].values, color=_color, linewidth=1.2, label=_label)
 
-    axes[0].axhline(y=100, color='gray', linestyle='--', linewidth=1, alpha=0.7)
-    axes[0].set_ylabel("carbon intensity\n(gCO₂/kWh)", fontsize=FONTSIZE)
-    axes[0].legend(loc='upper right', fontsize=8)
+    axes[0].axhline(y=100, color='#333', linestyle='--', linewidth=1, alpha=0.9, label="Curtailment threshold")
+    axes[0].set_ylabel("Carbon intensity\n(gCO₂/kWh)", fontsize=FONTSIZE)
+    axes[0].legend(loc='upper right', fontsize=8, framealpha=1)
     axes[0].grid(True, linestyle='--', alpha=0.4)
 
     # Client loss plots (subplots 2-4)
@@ -120,7 +144,7 @@ def _(
             _ax.plot(_seg_t / 3600, _seg_raw, color=_color, alpha=0.2, linewidth=1)
             _ax.plot(_seg_t / 3600, _seg_smooth, color=_color, alpha=1.0, linewidth=1.5)
 
-        _ax.set_ylabel("train loss", fontsize=FONTSIZE)
+        _ax.set_ylabel("Train loss", fontsize=FONTSIZE)
         _ax.set_title(_label, fontsize=FONTSIZE, loc='right', y=0.7, x=0.99)
         _ax.grid(True, linestyle='--', alpha=0.4)
         _ax.set_ylim(2.5, 5.0)
@@ -154,13 +178,13 @@ def _(
     _add_inset(
         pos=[0.16, 0.40, 0.20, 0.10], client=0,
         xlim=(7000/3600, 9500/3600), ylim=(2.9, 3.5),
-        title="training stops if no sites are\nbelow the curtailment threshold",
+        title="training stops if no sites\nare curtailed",
         indicator_ax=axes[1],
     )
     _add_inset(
         pos=[0.43, 0.40, 0.20, 0.10], client=0,
         xlim=(15500/3600, 18000/3600), ylim=(2.8, 3.4),
-        title="if more than one site is cur-\ntailed, training switches to FL",
+        title="if more than one site is curtailed,\ntraining switches to federated mode",
         indicator_ax=axes[1],
     )
     _add_inset(
@@ -191,7 +215,7 @@ def _(COLORS, FONTSIZE, bl1_df, bl2_df, ema, ours_ppl, plt, style_time_axes):
     _plot(_ax, (bl2_df["time"] / 3600).values, bl2_df["perplexity"].values, COLORS["bl2"], "Two-site FL")
     _plot(_ax, (ours_ppl["time"] / 3600).values, ours_ppl["ppl"].values, COLORS["ours"], "Ours")
 
-    _ax.set_ylabel("Perplexity", fontsize=FONTSIZE)
+    _ax.set_ylabel("Train perplexity", fontsize=FONTSIZE)
     _ax.set_ylim(10, 50)
     _ax.legend(fontsize=FONTSIZE)
     _ax.grid(True, linestyle='--', alpha=0.6)
@@ -310,71 +334,37 @@ def _(
     _fig
     return (
         POWER_TRAIN,
-        bl_emission_rates,
         bl_power,
         bl_total_emissions,
+        client_regions,
         dt,
-        exp_emission_rate,
-        exp_end,
+        exp_powers,
         exp_total_emissions,
         exp_total_power,
         grid,
-        max_time,
+        mci_on_grid,
     )
 
 
 @app.cell
 def _(
     COLORS,
-    FONTSIZE,
-    bl_emission_rates,
     bl_total_emissions,
-    exp_emission_rate,
-    exp_end,
+    draw_bar,
     exp_total_emissions,
-    grid,
-    max_time,
     plt,
     region_colors,
     region_labels,
     region_list,
-    style_time_axes,
 ):
-    _hours = grid / 3600
-    _exp_mask = grid <= exp_end
-    _exp_h = _hours[_exp_mask]
-    _exp_em = (exp_emission_rate / 1000)[_exp_mask]
+    _fig, _ax_bar = plt.subplots(1, 1, figsize=(4, 2.5))
 
-    _fig, (_ax, _ax_bar) = plt.subplots(1, 2, figsize=(8.5, 2), gridspec_kw={"width_ratios": [2.5, 1], "wspace": 0.25})
-
-    for _r in region_list:
-        _vals = bl_emission_rates[_r] / 1000
-        _ax.plot(_hours, _vals, color=region_colors[_r], linestyle="--", linewidth=1, label=f"{region_labels[_r]}")
-    _ax.plot(_exp_h, _exp_em, color=COLORS["ours"], linewidth=1.5, label="Ours")
-    _ax.plot(_exp_h[-1], _exp_em[-1], 'o', color=COLORS["ours"], markersize=3)
-
-    _ax.set_ylabel("Emission rate (kgCO\u2082/h)", fontsize=FONTSIZE)
-    _ax.grid(True, linestyle="--", alpha=0.4)
-
-    _ax.legend(loc="upper left", fontsize=8, ncol=3, bbox_to_anchor=(-0, 1.29), frameon=False)
-
-    style_time_axes([_ax], max_time / 3600, walltime=False)
-
-    _bar_labels = [region_labels[_r] for _r in region_list] + ["Ours"]
+    _bar_labels = [region_labels[_r].replace(" ", "\n") for _r in region_list] + ["Ours\n(distributed)"]
     _bar_values = [bl_total_emissions[_r] for _r in region_list] + [exp_total_emissions]
     _bar_colors = [region_colors[_r] for _r in region_list] + [COLORS["ours"]]
-    _bars = _ax_bar.bar(_bar_labels, _bar_values, color=_bar_colors, width=0.7)
-    for _bar, _val in zip(_bars, _bar_values):
-        _ax_bar.text(_bar.get_x() + _bar.get_width() / 2, _bar.get_height(), f"{_val:.1f}", ha="center", va="bottom", fontsize=7)
-    _ax_bar.set_ylabel("Total emissions (kgCO\u2082)", fontsize=FONTSIZE)
-    _ax_bar.tick_params(labelsize=8, axis="x", labelrotation=30, pad=2)
-    plt.setp(_ax_bar.get_xticklabels(), ha="right")
-    _ax_bar.tick_params(labelsize=FONTSIZE, axis="y")
-    _ax_bar.grid(True, linestyle="--", alpha=0.4, axis="y")
-    _ax_bar.set_ylim(0, max(_bar_values) * 1.1)
+    draw_bar(_ax_bar, _bar_labels, _bar_values, _bar_colors, "Total emissions (kgCO\u2082)", ylim_factor=1.1, offset=0.3)
 
-    # _fig.tight_layout()
-    _fig.savefig("figures/emissions.pdf", bbox_inches="tight")
+    _fig.savefig("figures/emissions_short.pdf", bbox_inches="tight")
     _fig
     return
 
@@ -382,39 +372,64 @@ def _(
 @app.cell
 def _(
     COLORS,
-    FONTSIZE,
+    POWER_TRAIN,
+    bl1_df,
     bl_total_emissions,
-    exp_emission_rate,
-    exp_end,
+    client_regions,
+    dt,
+    exp_powers,
     exp_total_emissions,
     grid,
-    plt,
+    mci_on_grid,
+    np,
     region_colors,
     region_labels,
     region_list,
+    segment,
 ):
-    _hours = grid / 3600
-    _exp_mask = grid <= exp_end
-    _exp_h = _hours[_exp_mask]
-    _exp_em = (exp_emission_rate / 1000)[_exp_mask]
+    CURTAIL_THRESHOLD = 100  # gCO₂/kWh
+    curtail_masks = {r: mci_on_grid[r] < CURTAIL_THRESHOLD for r in region_list}
 
-    _fig, _ax_bar = plt.subplots(1, 1, figsize=(4, 2.5))
+    def _segs_to_grid(times):
+        _s = segment(times, times, times)
+        _mask = np.zeros(len(grid), dtype=bool)
+        for _st, _, _ in _s:
+            _mask[(grid >= _st[0]) & (grid <= _st[-1])] = True
+        return _mask
 
-    _bar_labels = [region_labels[_r].replace(" ", "\n") for _r in region_list] + ["Ours\n(distributed)"]
-    _bar_values = [bl_total_emissions[_r] for _r in region_list] + [exp_total_emissions]
-    _bar_colors = [region_colors[_r] for _r in region_list] + [COLORS["ours"]]
-    _bars = _ax_bar.bar(_bar_labels, _bar_values, color=_bar_colors, width=0.7)
-    for _bar, _val in zip(_bars, _bar_values):
-        _ax_bar.text(_bar.get_x() + _bar.get_width() / 2, _bar.get_height() + 0.3, f"{_val:.1f}", ha="center", va="bottom", fontsize=9)
-    _ax_bar.set_ylabel("Total emissions (kgCO\u2082)", fontsize=FONTSIZE)
-    _ax_bar.tick_params(labelsize=8, axis="x")
-    #plt.setp(_ax_bar.get_xticklabels(), ha="right")
-    _ax_bar.tick_params(labelsize=FONTSIZE, axis="y")
-    _ax_bar.grid(True, linestyle="--", alpha=0.4, axis="y")
-    _ax_bar.set_ylim(0, max(_bar_values) * 1.1)
+    _bl1_power_arr = np.where(_segs_to_grid(bl1_df["time"].values.astype(float)), POWER_TRAIN, 0.0)
 
-    # _fig.tight_layout()
-    _fig.savefig("figures/emissions_short.pdf", bbox_inches="tight")
+    curt_fracs = []
+    _den = np.sum(_bl1_power_arr) * dt
+    for _r in region_list:
+        _num = np.sum(_bl1_power_arr * curtail_masks[_r]) * dt
+        curt_fracs.append(_num / _den if _den > 0 else 0.0)
+
+    _ours_num = sum(np.sum(exp_powers[c] * curtail_masks[r]) * dt for c, r in client_regions.items())
+    _ours_den = sum(np.sum(exp_powers[c]) * dt for c in client_regions)
+    curt_fracs.append(_ours_num / _ours_den if _ours_den > 0 else 0.0)
+
+    bar_labels = [region_labels[r] for r in region_list] + ["Ours"]
+    bar_colors = [region_colors[r] for r in region_list] + [COLORS["ours"]]
+    em_values = [bl_total_emissions[r] for r in region_list] + [exp_total_emissions]
+    return bar_colors, bar_labels, curt_fracs, em_values
+
+
+@app.cell
+def _(bar_colors, bar_labels, curt_fracs, draw_bar, plt):
+    _fig, _ax = plt.subplots(figsize=(3.5, 1.8))
+    draw_bar(_ax, bar_labels, [f * 100 for f in curt_fracs], bar_colors,
+             "Curtailed energy (%)", fmt="{:.0f}%", ylim_factor=1.2, horizontal=True)
+    _fig.savefig("figures/barchart_curtailed.pdf", bbox_inches="tight")
+    _fig
+    return
+
+
+@app.cell
+def _(bar_colors, bar_labels, draw_bar, em_values, plt):
+    _fig, _ax = plt.subplots(figsize=(3.5, 1.8))
+    draw_bar(_ax, bar_labels, em_values, bar_colors, "Total emissions (kgCO\u2082)", horizontal=True)
+    _fig.savefig("figures/barchart_emissions.pdf", bbox_inches="tight")
     _fig
     return
 
@@ -493,6 +508,11 @@ def _(
 
     Our approach emits only {_pct_min:.0f}\u2013{_pct_max:.0f}% of the carbon compared to single-region baselines.
     """)
+    return
+
+
+@app.cell
+def _():
     return
 
 

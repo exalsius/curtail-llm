@@ -1,21 +1,19 @@
 # curtail-llm
 
-Distributed LLM pretraining during renewable curtailment windows.
+Technical report: [Distributed LLM Pretraining During Renewable Curtailment Windows: A Feasibility Study](https://arxiv.org/pdf/2602.22760) 
 
-This prototype trains a 561M-parameter transformer ([nanochat](https://github.com/KellerJordan/modded-nanogpt) d20) across geographically distributed GPU clusters, scheduling training only when regional renewable curtailment is detected. 
-- Training is coordinated via the [Flower](https://flower.ai/) federated learning framework
-- Nodes are elastically added/removed using [Exalsius](https://www.exalsius.ai/) and a custom [Kubernetes operator](https://github.com/exalsius/flower-operator)
+This prototype trains a 561M-parameter [nanochat](https://github.com/karpathy/nanochat) d20 transformer across geographically distributed GPU clusters. 
+Training is scheduled only during periods of local renewable energy curtailment, when electricity is both clean and (depending on procurement contracts) cheap.
+- Federated training is coordinated via [Flower](https://flower.ai/).
+- Nodes are elastically added/removed using [Exalsius](https://www.exalsius.ai/) and a custom [Flower Kubernetes operator](https://github.com/exalsius/flower-operator).
 - Energy system dynamics are simulated by [Vessim](https://vessim.readthedocs.io/en/latest/), with curtailment periods derived from real-world marginal carbon intensity traces provided by [WattTime](https://watttime.org/).
 
-Depending on how many sites experience curtailment at any given time, the system operates in one of three regimes:
-- **No curtailment** -- Training is paused.
-- **One site curtailed** -- That site trains locally using standard data-parallel training.
-- **Multiple sites curtailed** -- Sites train concurrently and synchronize periodically via federated aggregation.
-
-Even when curtailment windows are rare and sporadic, spreading training across multiple regions recovers enough compute to match single-site training quality while cutting operational carbon emissions to 5--12% of baseline levels.
-
+In our experiment, curtailment-aware training preserves quality while reducing operational emissions to 5-12% of single-site baselines.
 
 ## Setup
+
+This setup explains how to run the system on a single machine (in our case 8xA100 GPUs) using the `SubprocessProvisioner`, simulating multiple clients via separate processes.
+For replicating the distributed deployment with the `ExalsiusProvisioner`, please refer to the [Exalsius documentation](https://docs.exalsius.ai/) and the [exalsius/flower-operator](https://github.com/exalsius/flower-operator) repository or reach out to us!
 
 ### Installation (all nodes)
 
@@ -132,14 +130,6 @@ You can override config values from the command line:
 flwr run . local-deployment --run-config "lr=0.0005" --stream
 ```
 
-### Local Simulation
-
-Best for development and testing:
-
-```bash
-flwr run . local-simulation-gpu --stream
-```
-
 ### Vanilla nanochat Baseline
 
 ```bash
@@ -154,10 +144,17 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --standalone --nproc_per_node=4 \
   --device_batch_size 8 --run baseline
 ```
 
-## Evaluation
 
-Evaluate a trained checkpoint:
+## Cite as
 
-```bash
-python scripts/base_eval.py --checkpoint final_model.pt
+Wiesner, Philipp, Soeren Becker, Brett Cornick, Dominik Scheinert, Alexander Acker, and Odej Kao. 2026. _Distributed LLM Pretraining During Renewable Curtailment Windows: A Feasibility Study_. Technical Report arXiv:2602.22760. Exalsius.
+
+```bibtex
+@techreport{wiesner2026curtailllm,
+  title = {Distributed LLM Pretraining During Renewable Curtailment Windows: A Feasibility Study},
+  author = {Wiesner, Philipp and Becker, Soeren and Cornick, Brett and Scheinert, Dominik and Acker, Alexander and Kao, Odej},
+  institution = {Exalsius},
+  number = {arXiv:2602.22760},
+  year = {2026}
+}
 ```

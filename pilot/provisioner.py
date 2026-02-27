@@ -71,7 +71,7 @@ class SubprocessProvisioner(Provisioner):
 
         self.gpu_slots[slot_id]["busy"] = True
 
-        provisioning_delay = 240  # 4 minutes artificial overhead
+        provisioning_delay = 300  # 5 minutes artificial overhead, roughly the time it takes to provision a node using Exalsius
         evt = get_event_log()
         if evt:
             evt.log("PROVISION_START", client=client_name)
