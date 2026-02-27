@@ -8,7 +8,12 @@ Training is scheduled only during periods of local renewable energy curtailment,
 - Nodes are elastically added/removed using [Exalsius](https://www.exalsius.ai/) and a custom [Flower Kubernetes operator](https://github.com/exalsius/flower-operator).
 - Energy system dynamics are simulated by [Vessim](https://vessim.readthedocs.io/en/latest/), with curtailment periods derived from real-world marginal carbon intensity traces provided by [WattTime](https://watttime.org/).
 
-In our experiment, curtailment-aware training preserves quality while reducing operational emissions to 5-12% of single-site baselines.
+![Alt text](figures/fig1.png)
+
+Figure 1 | Sites train only during curtailment windows (green), when renewable generation exceeds
+demand. If multiple sites are curtailed simultaneously, they train locally in parallel and periodically
+average model states.
+In our experiment, curtailment-aware scheduling preserves training quality while **reducing operational emissions to 5-12% of single-site baselines**.
 
 ## Setup
 
