@@ -12,6 +12,10 @@ def _():
     import matplotlib.dates as mdates
     import numpy as np
 
+    import matplotlib
+    matplotlib.rcParams['pdf.fonttype'] = 42
+    matplotlib.rcParams['ps.fonttype'] = 42
+
     START_TIME = pd.Timestamp("2026-01-11 17:00:00+00:00")
     FONTSIZE = 9
 
@@ -347,22 +351,9 @@ def _(
 
 
 @app.cell
-def _(
-    COLORS,
-    bl_total_emissions,
-    draw_bar,
-    exp_total_emissions,
-    plt,
-    region_colors,
-    region_labels,
-    region_list,
-):
-    _fig, _ax_bar = plt.subplots(1, 1, figsize=(4, 2.5))
-
-    _bar_labels = [region_labels[_r].replace(" ", "\n") for _r in region_list] + ["Ours\n(distributed)"]
-    _bar_values = [bl_total_emissions[_r] for _r in region_list] + [exp_total_emissions]
-    _bar_colors = [region_colors[_r] for _r in region_list] + [COLORS["ours"]]
-    draw_bar(_ax_bar, _bar_labels, _bar_values, _bar_colors, "Total emissions (kgCO\u2082)", ylim_factor=1.1, offset=0.3)
+def _(bar_colors, bar_labels, draw_bar, em_values, plt):
+    _fig, _ax = plt.subplots(figsize=(3.5, 2.4))
+    draw_bar(_ax, bar_labels, em_values, bar_colors, "Total emissions (kgCO\u2082)", horizontal=True)
 
     _fig.savefig("figures/emissions_short.pdf", bbox_inches="tight")
     _fig

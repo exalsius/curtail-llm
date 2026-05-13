@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.12"
 resolution-markers = [
     "sys_platform == 'linux'",
@@ -2032,7 +2032,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.9.0" },
     { name = "tqdm" },
     { name = "transformers", specifier = ">=4.57.3" },
-    { name = "vessim", extras = ["sil"], specifier = ">=0.13.1" },
+    { name = "vessim", extras = ["sil"], specifier = ">=0.15.0" },
     { name = "wandb" },
 ]
 
@@ -3165,7 +3165,7 @@ wheels = [
 
 [[package]]
 name = "vessim"
-version = "0.13.1"
+version = "0.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "docopt-ng" },
@@ -3174,10 +3174,11 @@ dependencies = [
     { name = "mosaik-api-v3" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/49/78/094044cadffbb8d0006488563bfd7e6cf07d3ac9dfcd90aa927338b27ed5/vessim-0.13.1.tar.gz", hash = "sha256:b3e057fd919dddc81b731cc6efd4ae924f4c1dd28a82179caeb0909a5d0f2ec3", size = 10761228, upload-time = "2026-01-29T14:25:15.547Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/50/78/d15c55510c6af0c66f787011cd10e21fef1d03af71391f072304e572ec01/vessim-0.15.0.tar.gz", hash = "sha256:298980eba47a1d264355fd66563a75563b0d3a4fc498a2869ca867cf5a615d8a", size = 42922426, upload-time = "2026-05-03T23:17:48.874Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e7/ec/0482badeb1fbefe45076767506ce45f663eb18e37ab24264e8114395f0b2/vessim-0.13.1-py3-none-any.whl", hash = "sha256:417ac13355d442b1dcf5de27d68f4c15917cc93725f99c808f51cf5a3a363597", size = 35221, upload-time = "2026-01-29T14:25:13.973Z" },
+    { url = "https://files.pythonhosted.org/packages/32/3c/29353c94500fd8435a2220d67c341e4c50f32fcaba45e680d9a1fbb2591a/vessim-0.15.0-py3-none-any.whl", hash = "sha256:19ac8437916c3f719b4f1466c7e439dbb4982a99eb59ea9e69898e299b0acc7a", size = 313720, upload-time = "2026-05-03T23:17:45.624Z" },
 ]
 
 [package.optional-dependencies]

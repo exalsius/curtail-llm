@@ -12,7 +12,7 @@ def main():
         ("client_2", "NEM_SA"),
     ]
 
-    environment = vs.Environment(sim_start=SIM_START, step_size=10)
+    environment = vs.Environment.live(sim_start=SIM_START, step_size=10)
     mci_data = pd.read_csv("mci.csv", index_col="point_time", parse_dates=True)
 
     for client_name, mci_region in clients:
@@ -27,13 +27,13 @@ def main():
                 #    password="zponvkk0HC4oi5Kn1bvI"
                 # )),
             ],
-            grid_signals={"mci": vs.Trace(mci_data, column=mci_region)},
+            grid_signals={"mci": vs.Trace(mci_data, column=mci_region, anchor=SIM_START)},
         )
 
-    environment.add_controller(vs.CsvLogger(outfile="results/experiment1.csv"))
+    environment.add_controller(vs.CsvLogger(outdir="results/experiment1"))
     environment.add_controller(vs.Api(export_prometheus=False, broker_port=8800))
 
-    environment.run(until=3600*18, rt_factor=1, behind_threshold=5)
+    environment.run(until=3600*18)
 
 
 if __name__ == "__main__":
